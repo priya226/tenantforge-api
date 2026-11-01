@@ -23,6 +23,7 @@ cd tenantforge-api
 npm install
 cp .env.example .env
 docker compose up -d
+npm run db:migrate
 npm run start:dev
 ```
 
@@ -60,6 +61,20 @@ These are local development credentials only.
 
 Data is stored in the `pgdata` Docker volume, so it survives `docker compose down`. To wipe the database and start fresh, run `docker compose down -v`.
 
+## Database migrations
+
+The schema is managed by [Flyway](https://documentation.red-gate.com/flyway), run from the `flyway/flyway` Docker image. Java is not needed on your machine. Migrations are plain SQL files in `db/migration/`:
+
+```
+db/migration/
+└─ V1__create_company.sql
+```
+
+- Name files `V<version>__<description>.sql`, with two underscores. Flyway runs them in version order and records each one in the `flyway_schema_history` table, so each file runs only once.
+- Never edit a migration that has already been applied. Flyway stores a checksum and refuses to run if an applied file changes. To change the schema, add a new file, for example `V2__add_company_slug.sql`.
+- TypeORM never changes the schema (`synchronize: false`). When you change an entity, write the matching migration by hand and keep the column names and types identical.
+- The `flyway` service uses the `tools` profile, so `docker compose up` doesn't start it. Run it through the npm scripts.
+
 To open a SQL shell inside the container:
 
 ```bash
@@ -78,6 +93,8 @@ docker compose exec postgres psql -U postgres -d tenantforge
 | `npm run test:e2e` | Runs the end-to-end tests |
 | `npm run lint` | Checks the code with oxlint |
 | `npm run format` | Formats the code with Prettier |
+| `npm run db:migrate` | Applies pending database migrations with Flyway |
+| `npm run db:info` | Lists every migration and whether it has been applied |
 
 ## Project structure
 
@@ -85,12 +102,19 @@ docker compose exec postgres psql -U postgres -d tenantforge
 src/
 ├─ main.ts          Entry point: creates the Nest app and starts the HTTP server
 ├─ app.module.ts    Root module: every feature module gets imported here
+├─ common/
+│  └─ base.entity.ts      Shared columns: id, created_at, updated_at, is_deleted
+├─ companies/
+│  ├─ companies.module.ts
+│  └─ company.entity.ts   The company table
 └─ database/
-   └─ database.module.ts   TypeORM connection to Postgres, configured from .env
+   └─ database.module.ts  TypeORM connection to Postgres, configured from .env
+db/
+└─ migration/             Flyway SQL migrations
 ```
 
-The schema is changed only through TypeORM migrations. `synchronize` is turned off.
+The schema is changed only through Flyway migrations in `db/migration/`. TypeORM's `synchronize` is turned off.
 
 ## Project status
 
-Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM. Migrations, authentication and the feature flag modules come next.
+Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. The `company` table exists. Authentication and the feature flag modules come next.
