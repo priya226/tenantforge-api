@@ -7,7 +7,11 @@ import { DatabaseModule } from './database/database.module.js';
 import { CompaniesModule } from './companies/companies.module.js';
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), DatabaseModule, CompaniesModule],
+  imports: [
+    ConfigModule.forRoot({ isGlobal: true }),
+    DatabaseModule,
+    CompaniesModule,
+  ],
   controllers: [AppController],
   providers: [AppService],
 })

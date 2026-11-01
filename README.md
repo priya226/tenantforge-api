@@ -61,6 +61,23 @@ These are local development credentials only.
 
 Data is stored in the `pgdata` Docker volume, so it survives `docker compose down`. To wipe the database and start fresh, run `docker compose down -v`.
 
+## API
+
+### Companies
+
+| Method | Path | Body | Response |
+| --- | --- | --- | --- |
+| `POST` | `/companies` | `{ "name": string, "description"?: string \| null }` | `201` with the created company |
+| `GET` | `/companies` | | `200` with all companies that are not deleted, newest first |
+| `GET` | `/companies/:id` | | `200` with the company, or `404` |
+| `PATCH` | `/companies/:id` | any of `name`, `description` | `200` with the updated company. Only the fields you send change. Send `"description": null` to clear it |
+| `DELETE` | `/companies/:id` | | `204`. Soft delete: sets `is_deleted = true` and keeps the row |
+
+- `name` is required, trimmed, and at most 200 characters.
+- Unknown fields in the body are rejected with `400`, so a client can't set fields such as `isDeleted`.
+- A malformed `:id` (not a UUID) returns `400` before any database query runs.
+- These endpoints have no authentication yet. Later, only platform admins will be able to use them.
+
 ## Database migrations
 
 The schema is managed by [Flyway](https://documentation.red-gate.com/flyway), run from the `flyway/flyway` Docker image. Java is not needed on your machine. Migrations are plain SQL files in `db/migration/`:
@@ -103,8 +120,13 @@ src/
 ├─ main.ts          Entry point: creates the Nest app and starts the HTTP server
 ├─ app.module.ts    Root module: every feature module gets imported here
 ├─ common/
-│  └─ base.entity.ts      Shared columns: id, created_at, updated_at, is_deleted
+│  ├─ base.entity.ts      Shared columns: id, created_at, updated_at, is_deleted
+│  └─ base.repository.ts  Wraps a TypeORM repository; hides soft-deleted rows by default
 ├─ companies/
+│  ├─ dto/                  Request bodies with validation rules
+│  ├─ companies.controller.ts  HTTP routes
+│  ├─ companies.service.ts     Business logic (no database calls)
+│  ├─ company.repository.ts    All database calls for companies
 │  ├─ companies.module.ts
 │  └─ company.entity.ts   The company table
 └─ database/
@@ -113,8 +135,10 @@ db/
 └─ migration/             Flyway SQL migrations
 ```
 
+**Layers:** controller (HTTP) → service (business logic) → repository (database). Each feature has its own repository that extends `BaseRepository`. Every read adds `is_deleted = false` automatically. Pass `{ includeDeleted: true }` to also get deleted rows. Services never call TypeORM directly.
+
 The schema is changed only through Flyway migrations in `db/migration/`. TypeORM's `synchronize` is turned off.
 
 ## Project status
 
-Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. The `company` table exists. Authentication and the feature flag modules come next.
+Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. The companies API (CRUD with soft delete) works end to end. Users, authentication and the feature flag modules come next.
