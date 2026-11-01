@@ -6,12 +6,14 @@ Backend API for **TenantForge**, a multi-tenant feature flag service. Product te
 
 - [NestJS](https://nestjs.com/) 12
 - TypeScript (strict mode, ES modules)
+- [PostgreSQL](https://www.postgresql.org/) 17, run locally with Docker Compose
 - [Vitest](https://vitest.dev/) for tests, [oxlint](https://oxc.rs/) for linting
 
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) 24 or later (npm comes with it)
 - Git
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (running)
 
 ## Getting started
 
@@ -19,12 +21,35 @@ Backend API for **TenantForge**, a multi-tenant feature flag service. Product te
 git clone https://github.com/priya226/tenantforge-api.git
 cd tenantforge-api
 npm install
+docker compose up -d
 npm run start:dev
 ```
 
 Open <http://localhost:3000>. You should see `Hello World!`.
 
 The server listens on port `3000` by default. To use another port, set the `PORT` environment variable.
+
+## Database
+
+`docker compose up -d` starts PostgreSQL 17 in a container named `tenantforge-postgres`.
+
+| Setting | Value |
+| --- | --- |
+| Host | `localhost` |
+| Port | `5433` (not the default 5432, so it doesn't clash with a Postgres installed on the machine) |
+| User | `postgres` |
+| Password | `postgres` |
+| Database | `tenantforge` |
+
+These are local development credentials only.
+
+Data is stored in the `pgdata` Docker volume, so it survives `docker compose down`. To wipe the database and start fresh, run `docker compose down -v`.
+
+To open a SQL shell inside the container:
+
+```bash
+docker compose exec postgres psql -U postgres -d tenantforge
+```
 
 ## Scripts
 
@@ -49,4 +74,4 @@ src/
 
 ## Project status
 
-Milestone 1 is in progress. The NestJS project is set up; the database, authentication and feature flag modules come next.
+Milestone 1 is in progress. The NestJS project and the local PostgreSQL database are set up. Connecting the API to the database, authentication and the feature flag modules come next.
