@@ -21,6 +21,7 @@ Backend API for **TenantForge**, a multi-tenant feature flag service. Product te
 git clone https://github.com/priya226/tenantforge-api.git
 cd tenantforge-api
 npm install
+cp .env.example .env
 docker compose up -d
 npm run start:dev
 ```
@@ -28,6 +29,20 @@ npm run start:dev
 Open <http://localhost:3000>. You should see `Hello World!`.
 
 The server listens on port `3000` by default. To use another port, set the `PORT` environment variable.
+
+## Configuration
+
+The app reads its settings from a `.env` file in the project root, loaded by `@nestjs/config`. The file is git-ignored. Copy `.env.example` to create it.
+
+| Variable | Description | Local value |
+| --- | --- | --- |
+| `DB_HOST` | Postgres host | `localhost` |
+| `DB_PORT` | Postgres port | `5433` |
+| `DB_USER` | Postgres user | `postgres` |
+| `DB_PASSWORD` | Postgres password | must match `POSTGRES_PASSWORD` in `docker-compose.yml` |
+| `DB_NAME` | Database name | `tenantforge` |
+
+The app fails at startup if any of these variables is missing.
 
 ## Database
 
@@ -69,9 +84,13 @@ docker compose exec postgres psql -U postgres -d tenantforge
 ```
 src/
 ├─ main.ts          Entry point: creates the Nest app and starts the HTTP server
-└─ app.module.ts    Root module: every feature module gets imported here
+├─ app.module.ts    Root module: every feature module gets imported here
+└─ database/
+   └─ database.module.ts   TypeORM connection to Postgres, configured from .env
 ```
+
+The schema is changed only through TypeORM migrations. `synchronize` is turned off.
 
 ## Project status
 
-Milestone 1 is in progress. The NestJS project and the local PostgreSQL database are set up. Connecting the API to the database, authentication and the feature flag modules come next.
+Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM. Migrations, authentication and the feature flag modules come next.
