@@ -1,3 +1,12 @@
+// `npm run seed:admin`: creates the first platform admin from environment variables.
+//
+//   BOOTSTRAP_ADMIN_EMAIL     required
+//   BOOTSTRAP_ADMIN_PASSWORD  required, 12-128 characters
+//   BOOTSTRAP_ADMIN_NAME      optional, default "Platform Admin"
+//
+// Run it after `npm run db:migrate`. If an active platform admin already exists it does nothing,
+// so running it again is safe. It is not a migration: the password must never be in git,
+// and each environment (local, staging, prod) sets its own admin.
 import 'reflect-metadata';
 
 import { ConfigService } from '@nestjs/config';

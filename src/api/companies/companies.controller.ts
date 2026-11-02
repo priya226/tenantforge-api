@@ -30,6 +30,7 @@ export class CompaniesController {
     return this.facade.findAllCompanies();
   }
 
+  // ParseUUIDPipe returns 400 for a malformed id, before any query runs.
   @Get(':id')
   findOne(@Param('id', ParseUUIDPipe) id: string): Promise<Company> {
     return this.facade.findCompany(id);

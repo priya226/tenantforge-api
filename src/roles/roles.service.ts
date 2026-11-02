@@ -47,7 +47,10 @@ export class RolesService {
     return this.userRoles.findUserIdsWithRole(name);
   }
 
-  resolveNewUserRoles(
+  // Throws 400 unless the roles fit the user's company:
+  // a user without a company may only be PLATFORM_ADMIN,
+  // a user with a company may hold any role except PLATFORM_ADMIN.
+   resolveNewUserRoles(
     companyId: string | null,
     requested?: RoleName[],
   ): RoleName[] {
@@ -55,7 +58,7 @@ export class RolesService {
     this.assertRolesFitUser(companyId, names);
     return names;
   }
-
+  
   assertRolesFitUser(companyId: string | null, names: RoleName[]): void {
     if (names.length === 0) {
       throw new BadRequestException('A user must have at least one role');

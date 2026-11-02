@@ -14,11 +14,20 @@ import { UniqueViolationError } from './unique-violation.error.js';
 const UNIQUE_VIOLATION = '23505';
 
 export interface ScopeOptions {
+  // Set to true to also return soft-deleted rows. Off by default.
   includeDeleted?: boolean;
 }
 
 type Where<T> = FindOptionsWhere<T> | FindOptionsWhere<T>[];
 
+/**
+ * Wraps a TypeORM repository and adds `isDeleted = false` to every read,
+ * unless the caller passes `{ includeDeleted: true }`.
+ *
+ * It wraps instead of extending Repository on purpose: TypeORM's own methods
+ * (find, update, createQueryBuilder, ...) stay private, so no caller can skip
+ * the filter by accident. Add a method here when a feature needs one.
+ */
 export abstract class BaseRepository<T extends BaseEntity> {
   protected constructor(protected readonly repo: Repository<T>) {}
 
@@ -70,6 +79,8 @@ export abstract class BaseRepository<T extends BaseEntity> {
     await this.save(entity);
   }
 
+  // Soft-deletes every active row matching `where` in one UPDATE (no need to load them first).
+  // Used for cascades, e.g. "all users of company X". Returns how many rows were marked.
   async softDeleteBy(where: FindOptionsWhere<T>): Promise<number> {
     const result = await this.repo.update(
       this.scopeWhere(where, {}) as FindOptionsWhere<T>,
@@ -78,20 +89,8 @@ export abstract class BaseRepository<T extends BaseEntity> {
     return result.affected ?? 0;
   }
 
-  protected async translateErrors<R>(write: () => Promise<R>): Promise<R> {
-    try {
-      return await write();
-    } catch (error) {
-      if (
-        error instanceof QueryFailedError &&
-        (error.driverError as { code?: string }).code === UNIQUE_VIOLATION
-      ) {
-        throw new UniqueViolationError({ cause: error });
-      }
-      throw error;
-    }
-  }
-
+  // Adds isDeleted = false to the where clause. With an array (OR conditions),
+  // it is added to each condition, so no branch can match a deleted row.
   protected scopeWhere(
     where: Where<T> | undefined,
     scope: ScopeOptions,

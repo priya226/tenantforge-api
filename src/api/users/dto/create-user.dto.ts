@@ -32,6 +32,7 @@ export class CreateUserDto implements CreateUserRequest {
   @MaxLength(200) // matches varchar(200) in V2
   name!: string;
 
+  // Trimmed here so the format check sees the real value; the service lowercases it.
   @Transform(trim)
   @IsEmail()
   @MaxLength(254) // matches varchar(254) in V2
