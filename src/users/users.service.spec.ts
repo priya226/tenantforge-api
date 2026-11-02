@@ -1,9 +1,15 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import * as argon2 from 'argon2';
 import { QueryFailedError } from 'typeorm';
 
 import { CompaniesService } from '../companies/companies.service.js';
+import { TransactionRunner } from '../database/transaction-runner.js';
+import { RolesService } from '../roles/roles.service.js';
 import { User } from './user.entity.js';
 import { UserRepository } from './user.repository.js';
 import { UsersService } from './users.service.js';
@@ -48,19 +54,34 @@ describe('UsersService', () => {
     findForLogin: vi.fn(),
     create: vi.fn((data: Partial<User>) => Object.assign(new User(), data)),
     save: vi.fn((user: User) => Promise.resolve(user)),
+    withTransaction: vi.fn(),
   };
   const companiesService = { findOne: vi.fn() };
+  // RolesService has its own tests; here we only check UsersService calls it correctly.
+  const rolesService = {
+    assertRolesFitUser: vi.fn(),
+    replaceUserRoles: vi.fn((_user: unknown, names: string[]) =>
+      Promise.resolve([...names].sort()),
+    ),
+    getUserRoles: vi.fn(),
+  };
+  const transactions = {
+    run: vi.fn((work: (tx: unknown) => Promise<unknown>) => work('tx')),
+  };
 
   beforeEach(async () => {
     vi.clearAllMocks();
     companiesService.findOne.mockResolvedValue({ id: COMPANY_ID });
     repo.findByEmail.mockResolvedValue(null);
+    repo.withTransaction.mockReturnValue(repo);
 
     const moduleRef = await Test.createTestingModule({
       providers: [
         UsersService,
         { provide: UserRepository, useValue: repo },
         { provide: CompaniesService, useValue: companiesService },
+        { provide: RolesService, useValue: rolesService },
+        { provide: TransactionRunner, useValue: transactions },
       ],
     }).compile();
     service = moduleRef.get(UsersService);
@@ -129,6 +150,62 @@ describe('UsersService', () => {
       repo.save.mockRejectedValueOnce(error);
 
       await expect(service.create(input)).rejects.toBe(error);
+    });
+
+    it('gives a new user VIEWER when no roles are sent, saving user and roles in one transaction', async () => {
+      const created = await service.create(input);
+
+      expect(transactions.run).toHaveBeenCalledOnce();
+      expect(repo.withTransaction).toHaveBeenCalledWith('tx');
+      expect(rolesService.replaceUserRoles).toHaveBeenCalledWith(
+        expect.objectContaining({ companyId: COMPANY_ID }),
+        ['VIEWER'],
+        'tx',
+      );
+      expect(created.roles).toEqual(['VIEWER']);
+    });
+
+    it('uses the roles from the request', async () => {
+      const created = await service.create({
+        ...input,
+        roles: ['COMPANY_ADMIN', 'VIEWER'],
+      });
+
+      expect(created.roles).toEqual(['COMPANY_ADMIN', 'VIEWER']);
+    });
+
+    it('checks the roles fit the company before hashing or saving', async () => {
+      rolesService.assertRolesFitUser.mockImplementationOnce(() => {
+        throw new BadRequestException();
+      });
+
+      await expect(
+        service.create({ ...input, roles: ['PLATFORM_ADMIN'] }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(repo.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('roles endpoints', () => {
+    it('setRoles returns 404 for an unknown user without touching roles', async () => {
+      repo.findOneBy.mockResolvedValue(null);
+
+      await expect(
+        service.setRoles(USER_ID, ['VIEWER']),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(rolesService.replaceUserRoles).not.toHaveBeenCalled();
+    });
+
+    it('setRoles passes the user (with its company) to RolesService', async () => {
+      const user = makeUser();
+      repo.findOneBy.mockResolvedValue(user);
+
+      expect(await service.setRoles(USER_ID, ['COMPANY_ADMIN'])).toEqual([
+        'COMPANY_ADMIN',
+      ]);
+      expect(rolesService.replaceUserRoles).toHaveBeenCalledWith(user, [
+        'COMPANY_ADMIN',
+      ]);
     });
   });
 

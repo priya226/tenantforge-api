@@ -7,6 +7,9 @@ import * as argon2 from 'argon2';
 import { QueryFailedError } from 'typeorm';
 
 import { CompaniesService } from '../companies/companies.service.js';
+import { TransactionRunner } from '../database/transaction-runner.js';
+import type { RoleName } from '../roles/role-name.js';
+import { RolesService } from '../roles/roles.service.js';
 import { normalizeEmail } from './normalize-email.js';
 import { User } from './user.entity.js';
 import { UserRepository } from './user.repository.js';
@@ -18,7 +21,14 @@ export interface CreateUserInput {
   name: string;
   email: string;
   password: string;
+  roles?: RoleName[];
 }
+
+// A user as returned by the API: the entity (never with the hash) plus its role names.
+export type UserWithRoles = User & { roles: RoleName[] };
+
+// Role a new user gets when the request doesn't say: the least privileged one.
+const DEFAULT_ROLES: RoleName[] = ['VIEWER'];
 
 // Postgres error code for a unique constraint violation.
 const UNIQUE_VIOLATION = '23505';
@@ -31,6 +41,8 @@ export class UsersService {
   constructor(
     private readonly users: UserRepository,
     private readonly companiesService: CompaniesService,
+    private readonly rolesService: RolesService,
+    private readonly transactions: TransactionRunner,
   ) {}
 
   async findOne(id: string): Promise<User> {
@@ -41,9 +53,20 @@ export class UsersService {
     return user;
   }
 
-  async create(input: CreateUserInput): Promise<User> {
+  async findOneWithRoles(id: string): Promise<UserWithRoles> {
+    const user = await this.findOne(id);
+    return Object.assign(user, {
+      roles: await this.rolesService.getUserRoles(id),
+    });
+  }
+
+  async create(input: CreateUserInput): Promise<UserWithRoles> {
     // 404 if the company doesn't exist or is soft-deleted.
     await this.companiesService.findOne(input.companyId);
+
+    // Check the roles before the slow argon2 hash, so a bad request fails fast.
+    const roleNames = input.roles ?? DEFAULT_ROLES;
+    this.rolesService.assertRolesFitUser(input.companyId, roleNames);
 
     const email = normalizeEmail(input.email);
     if (await this.users.findByEmail(email)) {
@@ -58,8 +81,19 @@ export class UsersService {
     });
 
     let saved: User;
+    let roles: RoleName[];
     try {
-      saved = await this.users.save(user);
+      // The user row and its role rows are saved together: if the role insert fails,
+      // the user insert is rolled back too, so there is never a user without roles.
+      [saved, roles] = await this.transactions.run(async (tx) => {
+        const savedUser = await this.users.withTransaction(tx).save(user);
+        const savedRoles = await this.rolesService.replaceUserRoles(
+          savedUser,
+          roleNames,
+          tx,
+        );
+        return [savedUser, savedRoles] as const;
+      });
     } catch (error) {
       // Two sign-ups with the same email at the same moment can both pass the check above.
       // The unique index then rejects the second one; report it as 409, not 500.
@@ -74,7 +108,19 @@ export class UsersService {
 
     // save() returns the object we built, which still holds the hash. Never let it leave the service.
     delete saved.passwordHash;
-    return saved;
+    return Object.assign(saved, { roles });
+  }
+
+  // Replaces the user's roles (PUT /users/:id/roles). 404 if the user doesn't exist.
+  async setRoles(id: string, roles: RoleName[]): Promise<RoleName[]> {
+    const user = await this.findOne(id);
+    return this.rolesService.replaceUserRoles(user, roles);
+  }
+
+  // GET /users/:id/roles. 404 if the user doesn't exist.
+  async getRoles(id: string): Promise<RoleName[]> {
+    await this.findOne(id);
+    return this.rolesService.getUserRoles(id);
   }
 
   // For login. Returns the user (without the hash) if the email and password match, otherwise null.

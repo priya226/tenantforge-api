@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
+import { TransactionRunner } from './transaction-runner.js';
+
 @Module({
   imports: [
     TypeOrmModule.forRootAsync({
@@ -21,5 +23,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
       }),
     }),
   ],
+  // Feature modules import DatabaseModule to get TransactionRunner.
+  providers: [TransactionRunner],
+  exports: [TransactionRunner],
 })
 export class DatabaseModule {}

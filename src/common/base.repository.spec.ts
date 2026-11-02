@@ -1,4 +1,4 @@
-import type { Repository } from 'typeorm';
+import type { EntityManager, Repository } from 'typeorm';
 
 import { BaseEntity } from './base.entity.js';
 import { BaseRepository } from './base.repository.js';
@@ -73,5 +73,19 @@ describe('BaseRepository', () => {
     expect(raw.save).toHaveBeenCalledWith(
       expect.objectContaining({ id: '1', isDeleted: true }),
     );
+  });
+
+  it('withTransaction returns a copy that queries through the transaction and still filters deleted rows', async () => {
+    const txRaw = { find: vi.fn().mockResolvedValue([]) };
+    const tx = {
+      getRepository: vi.fn(() => txRaw),
+    } as unknown as EntityManager;
+
+    const inTx = repo.withTransaction(tx);
+    await inTx.find();
+
+    expect(inTx).toBeInstanceOf(ThingRepository); // feature methods are kept
+    expect(txRaw.find).toHaveBeenCalledWith({ where: { isDeleted: false } });
+    expect(raw.find).not.toHaveBeenCalled(); // the original repository is untouched
   });
 });
