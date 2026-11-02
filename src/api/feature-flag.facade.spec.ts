@@ -27,6 +27,10 @@ describe('FeatureFlagFacade', () => {
 
   const companies = {
     findOne: vi.fn(),
+    lockForUpdate: vi.fn(() => {
+      calls.push('lock');
+      return Promise.resolve({ id: COMPANY_ID });
+    }),
     remove: vi.fn(() => {
       calls.push('company');
       return Promise.resolve();
@@ -38,6 +42,10 @@ describe('FeatureFlagFacade', () => {
       Promise.resolve(makeUser(data.companyId)),
     ),
     anyActive: vi.fn(),
+    findIdsInCompany: vi.fn(() => {
+      calls.push('company-users');
+      return Promise.resolve([USER_ID, 'u2']);
+    }),
     softDeleteByCompany: vi.fn(() => {
       calls.push('users');
       return Promise.resolve(['u1', 'u2']);
@@ -198,16 +206,42 @@ describe('FeatureFlagFacade', () => {
       expect(roles.replaceUserRoles).not.toHaveBeenCalled();
     });
 
-    it('setUserRoles passes the user (with its company) to RolesService', async () => {
+    it('setUserRoles locks the company, then replaces roles with the company user ids, in one transaction', async () => {
       const user = makeUser();
       users.findOne.mockResolvedValue(user);
+      roles.replaceUserRoles.mockImplementationOnce(
+        (_user: unknown, names: string[]) => {
+          calls.push('roles');
+          return Promise.resolve(names);
+        },
+      );
 
       expect(await facade.setUserRoles(USER_ID, ['COMPANY_ADMIN'])).toEqual([
         'COMPANY_ADMIN',
       ]);
-      expect(roles.replaceUserRoles).toHaveBeenCalledWith(user, [
-        'COMPANY_ADMIN',
-      ]);
+      expect(calls).toEqual(['lock', 'company-users', 'roles']);
+      expect(companies.lockForUpdate).toHaveBeenCalledWith(COMPANY_ID, 'tx');
+      expect(roles.replaceUserRoles).toHaveBeenCalledWith(
+        user,
+        ['COMPANY_ADMIN'],
+        'tx',
+        [USER_ID, 'u2'],
+      );
+    });
+
+    it('setUserRoles does not lock anything for a platform user', async () => {
+      const user = makeUser(null);
+      users.findOne.mockResolvedValue(user);
+
+      await facade.setUserRoles(USER_ID, ['PLATFORM_ADMIN']);
+
+      expect(companies.lockForUpdate).not.toHaveBeenCalled();
+      expect(roles.replaceUserRoles).toHaveBeenCalledWith(
+        user,
+        ['PLATFORM_ADMIN'],
+        'tx',
+        [],
+      );
     });
   });
 });

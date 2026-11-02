@@ -23,6 +23,16 @@ export class UserRoleRepository extends BaseRepository<UserRole> {
     return this.softDeleteBy({ userId: In(userIds) });
   }
 
+  countUsersWithRole(name: RoleName, userIds: string[]): Promise<number> {
+    if (userIds.length === 0) {
+      return Promise.resolve(0);
+    }
+    return this.count({
+      userId: In(userIds),
+      role: { name, isDeleted: false },
+    });
+  }
+
   async findUserIdsWithRole(name: RoleName): Promise<string[]> {
     const mappings = await this.find({
       where: { role: { name, isDeleted: false } },

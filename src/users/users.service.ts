@@ -82,6 +82,10 @@ export class UsersService {
     return saved;
   }
 
+  findIdsInCompany(companyId: string, tx: Transaction): Promise<string[]> {
+    return this.users.withTransaction(tx).findIdsByCompany(companyId);
+  }
+
   async softDeleteByCompany(
     companyId: string,
     tx: Transaction,

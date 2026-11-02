@@ -14,4 +14,11 @@ export class CompanyRepository extends BaseRepository<Company> {
   findAllNewestFirst(): Promise<Company[]> {
     return this.find({ order: { createdAt: 'DESC' } });
   }
+
+  findByIdForUpdate(id: string): Promise<Company | null> {
+    return this.findOne({
+      where: { id },
+      lock: { mode: 'pessimistic_write' },
+    });
+  }
 }

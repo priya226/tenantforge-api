@@ -12,6 +12,10 @@ export class RoleRepository extends BaseRepository<Role> {
     super(repo);
   }
 
+  findAllByName(): Promise<Role[]> {
+    return this.find({ order: { name: 'ASC' } });
+  }
+
   findByNames(names: readonly RoleName[]): Promise<Role[]> {
     return this.find({ where: { name: In([...new Set(names)]) } });
   }

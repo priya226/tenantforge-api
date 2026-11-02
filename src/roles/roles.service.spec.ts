@@ -43,6 +43,13 @@ describe('RolesService', () => {
     findByNames: vi.fn((names: RoleName[]) =>
       Promise.resolve(names.map((n) => ROLES[n])),
     ),
+    findAllByName: vi.fn(() =>
+      Promise.resolve([
+        ROLES.COMPANY_ADMIN,
+        ROLES.PLATFORM_ADMIN,
+        ROLES.VIEWER,
+      ]),
+    ),
     withTransaction: vi.fn(),
   };
   const userRoles = {
@@ -52,6 +59,7 @@ describe('RolesService', () => {
     ),
     save: vi.fn((m: UserRole) => Promise.resolve(m)),
     softDelete: vi.fn(),
+    countUsersWithRole: vi.fn(),
     withTransaction: vi.fn(),
   };
   const transactions = {
@@ -73,6 +81,64 @@ describe('RolesService', () => {
       ],
     }).compile();
     service = moduleRef.get(RolesService);
+  });
+
+  describe('last company admin', () => {
+    const OTHER_ID = '9b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
+
+    it('rejects removing COMPANY_ADMIN from the last admin with 409', async () => {
+      userRoles.findByUser.mockResolvedValue([mapping('COMPANY_ADMIN')]);
+      userRoles.countUsersWithRole.mockResolvedValue(0);
+
+      await expect(
+        service.replaceUserRoles(companyUser, ['VIEWER'], 'tx' as never, [
+          USER_ID,
+          OTHER_ID,
+        ]),
+      ).rejects.toThrow('Company must keep at least one admin');
+      expect(userRoles.countUsersWithRole).toHaveBeenCalledWith(
+        'COMPANY_ADMIN',
+        [OTHER_ID],
+      );
+      expect(userRoles.softDelete).not.toHaveBeenCalled();
+      expect(userRoles.save).not.toHaveBeenCalled();
+    });
+
+    it('allows the demotion while another admin remains', async () => {
+      userRoles.findByUser.mockResolvedValue([mapping('COMPANY_ADMIN')]);
+      userRoles.countUsersWithRole.mockResolvedValue(1);
+
+      await expect(
+        service.replaceUserRoles(companyUser, ['VIEWER'], 'tx' as never, [
+          USER_ID,
+          OTHER_ID,
+        ]),
+      ).resolves.toEqual(['VIEWER']);
+      expect(userRoles.softDelete).toHaveBeenCalledOnce();
+    });
+
+    it('does not count admins when the user keeps COMPANY_ADMIN', async () => {
+      userRoles.findByUser.mockResolvedValue([mapping('COMPANY_ADMIN')]);
+
+      await service.replaceUserRoles(
+        companyUser,
+        ['COMPANY_ADMIN', 'VIEWER'],
+        'tx' as never,
+        [USER_ID],
+      );
+      expect(userRoles.countUsersWithRole).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('listRoles', () => {
+    it('returns every role from the repository, sorted by name', async () => {
+      await expect(service.listRoles()).resolves.toEqual([
+        ROLES.COMPANY_ADMIN,
+        ROLES.PLATFORM_ADMIN,
+        ROLES.VIEWER,
+      ]);
+      expect(roles.findAllByName).toHaveBeenCalledOnce();
+    });
   });
 
   describe('assertRolesFitUser', () => {

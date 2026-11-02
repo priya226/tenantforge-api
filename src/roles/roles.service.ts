@@ -10,6 +10,7 @@ import {
   TransactionRunner,
 } from '../database/transaction-runner.js';
 import type { RoleName } from './role-name.js';
+import { Role } from './role.entity.js';
 import { RoleRepository } from './role.repository.js';
 import { UserRoleRepository } from './user-role.repository.js';
 
@@ -27,6 +28,10 @@ export class RolesService {
     private readonly userRoles: UserRoleRepository,
     private readonly transactions: TransactionRunner,
   ) {}
+
+  listRoles(): Promise<Role[]> {
+    return this.roles.findAllByName();
+  }
 
   async getUserRoles(userId: string): Promise<RoleName[]> {
     const mappings = await this.userRoles.findByUser(userId);
@@ -50,7 +55,7 @@ export class RolesService {
   // Throws 400 unless the roles fit the user's company:
   // a user without a company may only be PLATFORM_ADMIN,
   // a user with a company may hold any role except PLATFORM_ADMIN.
-   resolveNewUserRoles(
+  resolveNewUserRoles(
     companyId: string | null,
     requested?: RoleName[],
   ): RoleName[] {
@@ -58,7 +63,7 @@ export class RolesService {
     this.assertRolesFitUser(companyId, names);
     return names;
   }
-  
+
   assertRolesFitUser(companyId: string | null, names: RoleName[]): void {
     if (names.length === 0) {
       throw new BadRequestException('A user must have at least one role');
@@ -82,6 +87,7 @@ export class RolesService {
     user: RoleHolder,
     names: RoleName[],
     tx?: Transaction,
+    companyUserIds: string[] = [],
   ): Promise<RoleName[]> {
     this.assertRolesFitUser(user.companyId, names);
     const wanted = [...new Set(names)];
@@ -100,6 +106,19 @@ export class RolesService {
 
       const current = await userRoles.findByUser(user.id);
       const currentIds = new Set(current.map((m) => m.roleId));
+
+      const losesCompanyAdmin =
+        current.some((m) => m.role?.name === 'COMPANY_ADMIN') &&
+        !wanted.includes('COMPANY_ADMIN');
+      if (losesCompanyAdmin) {
+        const otherAdmins = await userRoles.countUsersWithRole(
+          'COMPANY_ADMIN',
+          companyUserIds.filter((id) => id !== user.id),
+        );
+        if (otherAdmins === 0) {
+          throw new ConflictException('Company must keep at least one admin');
+        }
+      }
 
       for (const mapping of current) {
         if (!wantedIds.has(mapping.roleId)) {

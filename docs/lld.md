@@ -94,6 +94,7 @@ WHERE id = $2 AND company_id = $3 AND version = $expectedVersion AND is_deleted 
 | `POST /users` | Company admin | Create a user (optional `roles[]`, default VIEWER) | Built (auth pending) |
 | `GET /users/{id}` | Company admin | User with roles | Built (auth pending) |
 | `GET/PUT /users/{id}/roles` | Company admin | Read / replace a user's roles | Built (auth pending) |
+| `GET /roles` | Any user | Roles that can be assigned | Built (auth pending) |
 | `GET /users`, `PATCH/DELETE /users/{id}` | Company admin | List (paged), rename, delete | Next |
 | `POST /auth/login` | User | Get a JWT | Planned |
 | `GET/POST /flags`, `PUT/DELETE /flags/{key}` | Admin (viewer: read) | Flags; `PUT` takes `expectedVersion` | Planned |
@@ -111,11 +112,12 @@ WHERE id = $2 AND company_id = $3 AND version = $expectedVersion AND is_deleted 
 | DTO validation, bad UUID, role not allowed for the user | 400 |
 | Not logged in / wrong company or role | 401 / 403 |
 | Missing or soft-deleted row | 404 |
-| Duplicate (email, flag key) or stale `expectedVersion` | 409 |
+| Duplicate (email, flag key), stale `expectedVersion`, removing the last company admin | 409 |
 
 ## 6. Users, roles and auth
 
 - PLATFORM_ADMIN is only for users without a company. COMPANY_ADMIN and VIEWER are only for users with one. The service enforces this (400).
+- A company keeps at least one COMPANY_ADMIN (no upper limit). Role changes lock the company row (`SELECT … FOR UPDATE`) in the same transaction as the check, so two simultaneous demotions can't both pass; the second gets 409.
 - The 3 roles are seeded by Flyway V3 and looked up by name; there is no role-creation API.
 - The first platform admin is created by `npm run seed:admin` from env vars. It is idempotent and not a migration, so no secret ever lands in git.
 - Passwords: argon2id, 12–128 characters, no composition rules. Login verifies against a dummy hash for unknown emails, so timing doesn't reveal which accounts exist.
@@ -137,6 +139,7 @@ WHERE id = $2 AND company_id = $3 AND version = $expectedVersion AND is_deleted 
 | Deleting a company soft-deletes everything it owns, in one transaction. | Blocking the delete while users exist. |
 | One `FeatureFlagFacade` above feature services; it holds no business rules. | One facade per resource (more files for no gain); deletion hooks (flow hidden across modules); services calling each other (circular modules). |
 | Repositories own all query details and translate DB errors (`UniqueViolationError`). | Services building TypeORM queries and checking Postgres codes. |
+| Last company admin protected (409); company row locked `FOR UPDATE` during role changes. | Count check only (two demotions at once leave zero admins); SERIALIZABLE isolation with retries (more moving parts). |
 | Optimistic locking with `version` + `expectedVersion`. | Pessimistic locks held during an edit. |
 | Audit in the same transaction, full snapshots, rollback as a new change. | Async audit; diffs only; deleting newer versions. |
 | Flags and settings share one versioning/audit/rollback mechanism. | Separate history tables per entity. |

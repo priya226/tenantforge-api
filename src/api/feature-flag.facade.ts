@@ -8,6 +8,7 @@ import {
 import { Company } from '../companies/company.entity.js';
 import { TransactionRunner } from '../database/transaction-runner.js';
 import type { RoleName } from '../roles/role-name.js';
+import { Role } from '../roles/role.entity.js';
 import { RolesService } from '../roles/roles.service.js';
 import { User } from '../users/user.entity.js';
 import { type NewUser, UsersService } from '../users/users.service.js';
@@ -78,6 +79,10 @@ export class FeatureFlagFacade {
     return 'created';
   }
 
+  listRoles(): Promise<Role[]> {
+    return this.roles.listRoles();
+  }
+
   async findUser(id: string): Promise<UserWithRoles> {
     const user = await this.users.findOne(id);
     return Object.assign(user, { roles: await this.roles.getUserRoles(id) });
@@ -90,7 +95,14 @@ export class FeatureFlagFacade {
 
   async setUserRoles(id: string, roles: RoleName[]): Promise<RoleName[]> {
     const user = await this.users.findOne(id);
-    return this.roles.replaceUserRoles(user, roles);
+    return this.transactions.run(async (tx) => {
+      let companyUserIds: string[] = [];
+      if (user.companyId) {
+        await this.companies.lockForUpdate(user.companyId, tx);
+        companyUserIds = await this.users.findIdsInCompany(user.companyId, tx);
+      }
+      return this.roles.replaceUserRoles(user, roles, tx, companyUserIds);
+    });
   }
 
   private createUserWithRoles(

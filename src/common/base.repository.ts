@@ -89,6 +89,20 @@ export abstract class BaseRepository<T extends BaseEntity> {
     return result.affected ?? 0;
   }
 
+  protected async translateErrors<R>(write: () => Promise<R>): Promise<R> {
+    try {
+      return await write();
+    } catch (error) {
+      if (
+        error instanceof QueryFailedError &&
+        (error.driverError as { code?: string }).code === UNIQUE_VIOLATION
+      ) {
+        throw new UniqueViolationError({ cause: error });
+      }
+      throw error;
+    }
+  }
+
   // Adds isDeleted = false to the where clause. With an array (OR conditions),
   // it is added to each condition, so no branch can match a deleted row.
   protected scopeWhere(

@@ -49,6 +49,16 @@ export class CompaniesService {
     return this.companies.save(company);
   }
 
+  async lockForUpdate(id: string, tx: Transaction): Promise<Company> {
+    const company = await this.companies
+      .withTransaction(tx)
+      .findByIdForUpdate(id);
+    if (!company) {
+      throw new NotFoundException(`Company ${id} not found`);
+    }
+    return company;
+  }
+
   async remove(id: string, tx: Transaction): Promise<void> {
     const companies = this.companies.withTransaction(tx);
     const company = await companies.findOneBy({ id });

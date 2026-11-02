@@ -108,11 +108,18 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 - `roles` on create is optional and defaults to `["VIEWER"]`. The user and its roles are saved in one transaction, so there is never a user without a role.
 - A user with a company can't be `PLATFORM_ADMIN`, and a user without a company can only be `PLATFORM_ADMIN`. Breaking either rule returns `400`.
 - An empty list or an unknown role name returns `400`. If two requests change the same user's roles at once, the loser gets `409`.
+- A company must keep at least one `COMPANY_ADMIN` (any number is allowed). Removing that role from the last admin returns `409` "Company must keep at least one admin".
 
 - Each user belongs to one company (`company_id`). The company must exist and not be deleted, otherwise the response is `404`. A `NULL` company is reserved for platform admins, who can't be created through this endpoint.
 - `email` is trimmed and lowercased before saving. It must be unique among users that are not deleted, so a duplicate returns `409`.
 - `password` must be 12–128 characters, with no rules about symbols or digits, and it is not trimmed. It is stored only as an argon2id hash in `password_hash`. That column is `select: false`, so normal queries never load it.
 - No authentication yet. Later, only company admins will be able to create users, and only in their own company.
+
+### Roles
+
+| Method | Path | Response |
+| --- | --- | --- |
+| `GET` | `/roles` | `200` with the roles that can be assigned: `[{ "name", "description" }]`, sorted by name |
 
 ## Database migrations
 
@@ -164,9 +171,11 @@ src/
 │  ├─ companies/
 │  │  ├─ dto/                     Request bodies with validation rules
 │  │  └─ companies.controller.ts  HTTP routes
-│  └─ users/
-│     ├─ dto/                 Bodies of POST /users and PUT /users/:id/roles
-│     └─ users.controller.ts  HTTP routes
+│  ├─ users/
+│  │  ├─ dto/                 Bodies of POST /users and PUT /users/:id/roles
+│  │  └─ users.controller.ts  HTTP routes
+│  └─ roles/
+│     └─ roles.controller.ts  GET /roles
 ├─ common/
 │  ├─ base.entity.ts      Shared columns: id, created_at, updated_at, is_deleted
 │  ├─ base.repository.ts  Wraps a TypeORM repository; hides soft-deleted rows; turns Postgres unique violations into UniqueViolationError
@@ -187,9 +196,9 @@ src/
 │  ├─ role-name.ts           The 3 role names (must match the rows inserted by V3)
 │  ├─ role.entity.ts         The role table
 │  ├─ user-role.entity.ts    The user_role mapping table (a user can hold several roles)
-│  ├─ role.repository.ts     Look up roles by name
-│  ├─ user-role.repository.ts  A user's active role mappings
-│  ├─ roles.service.ts       Company rule, replace a user's set of roles
+│  ├─ role.repository.ts     List roles, look up roles by name
+│  ├─ user-role.repository.ts  A user's active role mappings; count users holding a role
+│  ├─ roles.service.ts       Company rule, last-admin rule, replace a user's set of roles
 │  └─ roles.module.ts
 ├─ seed/
 │  └─ seed-admin.ts       npm run seed:admin: starts Nest without HTTP, calls FeatureFlagFacade.ensurePlatformAdmin
@@ -238,10 +247,15 @@ The schema is changed only through Flyway migrations in `db/migration/`. TypeORM
 - `password_hash` is `select: false`. `UserRepository.findForLogin` is the only query that loads it, and the hash is removed before a user leaves the service.
 - Login runs an argon2 verify even for unknown emails, so response time doesn't reveal which emails have accounts.
 
+**Roles**
+- A company can have any number of admins, but never zero. `PUT /users/:id/roles` runs in one transaction: lock the company row (`SELECT … FOR UPDATE`), load the company's user ids, then `RolesService.replaceUserRoles` returns 409 if the change would remove `COMPANY_ADMIN` from the last admin.
+- The lock makes role changes in the same company run one after another. Without it, two admins demoting each other at the same moment would both see "another admin exists" and both succeed. Other companies are not blocked.
+- Platform users are not locked: they can only hold `PLATFORM_ADMIN`, and a user must keep at least one role.
+
 **Deleting a company**
 - `FeatureFlagFacade.removeCompany` soft-deletes the company, its users and their role mappings in one transaction.
 - When a new feature owns company data (flags, API keys, settings), its cleanup step is added there.
 
 ## Project status
 
-Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. Working end to end: the companies API (CRUD with soft delete), the users API (one company per user, argon2-hashed passwords), roles (a user can hold several; managed through `/users/:id/roles`), and `seed:admin` for the first platform admin. Next: the rest of the users API, then authentication (JWT) and tenant scoping, then flags and config with versioning, optimistic locking (409), audit and rollback. See the [roadmap](docs/hld.md#11-roadmap).
+Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. Working end to end: the companies API (CRUD with soft delete), the users API (one company per user, argon2-hashed passwords), roles (a user can hold several; managed through `/users/:id/roles`; `GET /roles`; a company always keeps at least one admin), and `seed:admin` for the first platform admin. Next: the rest of the users API, then authentication (JWT) and tenant scoping, then flags and config with versioning, optimistic locking (409), audit and rollback. See the [roadmap](docs/hld.md#11-roadmap).
