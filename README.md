@@ -78,17 +78,30 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 - A malformed `:id` (not a UUID) returns `400` before any database query runs.
 - These endpoints have no authentication yet. Later, only platform admins will be able to use them.
 
+### Users
+
+| Method | Path | Body | Response |
+| --- | --- | --- | --- |
+| `POST` | `/users` | `{ "companyId": uuid, "name": string, "email": string, "password": string }` | `201` with the created user (never includes the password hash) |
+| `GET` | `/users/:id` | | `200` with the user, or `404` |
+
+- Each user belongs to one company (`company_id`). The company must exist and not be deleted, otherwise the response is `404`. A `NULL` company is reserved for platform admins, who can't be created through this endpoint.
+- `email` is trimmed and lowercased before saving. It must be unique among users that are not deleted, so a duplicate returns `409`.
+- `password` must be 12–128 characters, with no rules about symbols or digits, and it is not trimmed. It is stored only as an argon2id hash in `password_hash`. That column is `select: false`, so normal queries never load it.
+- No authentication yet. Later, only company admins will be able to create users, and only in their own company.
+
 ## Database migrations
 
 The schema is managed by [Flyway](https://documentation.red-gate.com/flyway), run from the `flyway/flyway` Docker image. Java is not needed on your machine. Migrations are plain SQL files in `db/migration/`:
 
 ```
 db/migration/
-└─ V1__create_company.sql
+├─ V1__create_company.sql
+└─ V2__create_app_user.sql
 ```
 
 - Name files `V<version>__<description>.sql`, with two underscores. Flyway runs them in version order and records each one in the `flyway_schema_history` table, so each file runs only once.
-- Never edit a migration that has already been applied. Flyway stores a checksum and refuses to run if an applied file changes. To change the schema, add a new file, for example `V2__add_company_slug.sql`.
+- Never edit a migration that has already been applied. Flyway stores a checksum and refuses to run if an applied file changes. To change the schema, add a new file, for example `V3__add_company_slug.sql`.
 - TypeORM never changes the schema (`synchronize: false`). When you change an entity, write the matching migration by hand and keep the column names and types identical.
 - The `flyway` service uses the `tools` profile, so `docker compose up` doesn't start it. Run it through the npm scripts.
 
@@ -129,6 +142,14 @@ src/
 │  ├─ company.repository.ts    All database calls for companies
 │  ├─ companies.module.ts
 │  └─ company.entity.ts   The company table
+├─ users/
+│  ├─ dto/                 Request body for creating a user
+│  ├─ users.controller.ts  HTTP routes
+│  ├─ users.service.ts     Create (company check, duplicate email, argon2 hash) and verifyCredentials for login
+│  ├─ user.repository.ts   All database calls for users; findForLogin is the only query that loads the hash
+│  ├─ users.module.ts
+│  ├─ user.entity.ts       The app_user table ("user" is a reserved word in Postgres)
+│  └─ normalize-email.ts   Trim + lowercase, used wherever an email is stored or looked up
 └─ database/
    └─ database.module.ts  TypeORM connection to Postgres, configured from .env
 db/
@@ -141,4 +162,4 @@ The schema is changed only through Flyway migrations in `db/migration/`. TypeORM
 
 ## Project status
 
-Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. The companies API (CRUD with soft delete) works end to end. Users, authentication and the feature flag modules come next.
+Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. The companies API (CRUD with soft delete) and the users API (one company per user, argon2-hashed passwords) work end to end. Roles, authentication (JWT) and the feature flag modules come next.
