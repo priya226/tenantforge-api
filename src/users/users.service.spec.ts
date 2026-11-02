@@ -55,6 +55,7 @@ describe('UsersService', () => {
     create: vi.fn((data: Partial<User>) => Object.assign(new User(), data)),
     save: vi.fn((user: User) => Promise.resolve(user)),
     withTransaction: vi.fn(),
+    count: vi.fn(),
   };
   const companiesService = { findOne: vi.fn() };
   // RolesService has its own tests; here we only check UsersService calls it correctly.
@@ -64,6 +65,7 @@ describe('UsersService', () => {
       Promise.resolve([...names].sort()),
     ),
     getUserRoles: vi.fn(),
+    getUserIdsWithRole: vi.fn(),
   };
   const transactions = {
     run: vi.fn((work: (tx: unknown) => Promise<unknown>) => work('tx')),
@@ -182,6 +184,59 @@ describe('UsersService', () => {
       await expect(
         service.create({ ...input, roles: ['PLATFORM_ADMIN'] }),
       ).rejects.toBeInstanceOf(BadRequestException);
+      expect(repo.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('ensurePlatformAdmin (seed:admin)', () => {
+    const admin = {
+      name: 'Platform Admin',
+      email: 'Admin@TenantForge.local',
+      password: PASSWORD,
+    };
+
+    it('creates a user without a company holding PLATFORM_ADMIN when none exists', async () => {
+      rolesService.getUserIdsWithRole.mockResolvedValue([]);
+
+      expect(await service.ensurePlatformAdmin(admin)).toBe('created');
+      expect(repo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          companyId: null,
+          email: 'admin@tenantforge.local',
+        }),
+      );
+      expect(rolesService.replaceUserRoles).toHaveBeenCalledWith(
+        expect.anything(),
+        ['PLATFORM_ADMIN'],
+        'tx',
+      );
+      expect(companiesService.findOne).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when an active platform admin already exists', async () => {
+      rolesService.getUserIdsWithRole.mockResolvedValue([USER_ID]);
+      repo.count.mockResolvedValue(1);
+
+      expect(await service.ensurePlatformAdmin(admin)).toBe('already-exists');
+      expect(repo.save).not.toHaveBeenCalled();
+    });
+
+    it('creates a new admin when the only existing admin is soft-deleted', async () => {
+      rolesService.getUserIdsWithRole.mockResolvedValue([USER_ID]);
+      repo.count.mockResolvedValue(0); // count() skips deleted users
+
+      expect(await service.ensurePlatformAdmin(admin)).toBe('created');
+    });
+
+    it('rejects a short password or a bad email before saving', async () => {
+      rolesService.getUserIdsWithRole.mockResolvedValue([]);
+
+      await expect(
+        service.ensurePlatformAdmin({ ...admin, password: 'short' }),
+      ).rejects.toThrow(/12-128/);
+      await expect(
+        service.ensurePlatformAdmin({ ...admin, email: 'not-an-email' }),
+      ).rejects.toThrow(/valid email/);
       expect(repo.save).not.toHaveBeenCalled();
     });
   });

@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { BaseRepository } from '../common/base.repository.js';
+import type { RoleName } from './role-name.js';
 import { UserRole } from './user-role.entity.js';
 
 // All database access for user ↔ role mappings. Soft-deleted mappings are skipped (see BaseRepository).
@@ -19,5 +20,15 @@ export class UserRoleRepository extends BaseRepository<UserRole> {
       where: { userId, role: { isDeleted: false } },
       relations: { role: true },
     });
+  }
+
+  // Ids of users who actively hold the given role (e.g. "is there any PLATFORM_ADMIN?").
+  // Only filters the mapping and the role; the caller checks whether those users are deleted.
+  async findUserIdsWithRole(name: RoleName): Promise<string[]> {
+    const mappings = await this.find({
+      where: { role: { name, isDeleted: false } },
+      relations: { role: true },
+    });
+    return mappings.map((m) => m.userId);
   }
 }
