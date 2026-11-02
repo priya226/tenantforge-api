@@ -1,11 +1,13 @@
 import { Transform } from 'class-transformer';
 import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
 
+import type { CreateCompanyInput } from '../../../companies/companies.service.js';
+
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
 
 // Body of POST /companies.
-export class CreateCompanyDto {
+export class CreateCompanyDto implements CreateCompanyInput {
   @Transform(trim)
   @IsString()
   @IsNotEmpty()

@@ -79,7 +79,7 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 | `GET` | `/companies` | | `200` with all companies that are not deleted, newest first |
 | `GET` | `/companies/:id` | | `200` with the company, or `404` |
 | `PATCH` | `/companies/:id` | any of `name`, `description` | `200` with the updated company. Only the fields you send change. Send `"description": null` to clear it |
-| `DELETE` | `/companies/:id` | | `204`. Soft delete: sets `is_deleted = true` and keeps the row |
+| `DELETE` | `/companies/:id` | | `204`. Soft delete: sets `is_deleted = true` and keeps the row. **Cascades** in one transaction: all users of the company and their role mappings are soft-deleted too, so their emails become free to reuse |
 
 - `name` is required, trimmed, and at most 200 characters.
 - Unknown fields in the body are rejected with `400`, so a client can't set fields such as `isDeleted`.
@@ -148,14 +148,18 @@ docker compose exec postgres psql -U postgres -d tenantforge
 ```
 src/
 ├─ main.ts          Entry point: creates the Nest app and starts the HTTP server
-├─ app.module.ts    Root module: every feature module gets imported here
+├─ app.module.ts    Root module: config, database, ApiModule
+├─ api/             HTTP layer: controllers + facades (one folder per resource)
+│  ├─ api.module.ts        Imports the feature modules the facades coordinate
+│  └─ companies/
+│     ├─ dto/                     Request bodies with validation rules
+│     ├─ companies.controller.ts  HTTP routes; calls CompanyFacade
+│     └─ company.facade.ts        Use cases; remove() cascades company → users → roles in one transaction
 ├─ common/
 │  ├─ base.entity.ts      Shared columns: id, created_at, updated_at, is_deleted
 │  └─ base.repository.ts  Wraps a TypeORM repository; hides soft-deleted rows by default
-├─ companies/
-│  ├─ dto/                  Request bodies with validation rules
-│  ├─ companies.controller.ts  HTTP routes
-│  ├─ companies.service.ts     Business logic (no database calls)
+├─ companies/              Feature module, no controller
+│  ├─ companies.service.ts     Company rules only (no database calls, no other features)
 │  ├─ company.repository.ts    All database calls for companies
 │  ├─ companies.module.ts
 │  └─ company.entity.ts   The company table
@@ -185,7 +189,7 @@ db/
 └─ migration/             Flyway SQL migrations
 ```
 
-**Layers:** controller (HTTP) → service (business logic) → repository (database). Each feature has its own repository that extends `BaseRepository`. Every read adds `is_deleted = false` automatically. Pass `{ includeDeleted: true }` to also get deleted rows. Services never call TypeORM directly.
+**Layers:** controller (HTTP) → facade (use case, coordinates features, owns cross-feature transactions) → service (rules for one feature) → repository (database). Feature services never call each other; the facade does. Users is still being moved to this shape. Each feature has its own repository that extends `BaseRepository`. Every read adds `is_deleted = false` automatically. Pass `{ includeDeleted: true }` to also get deleted rows. Services never call TypeORM directly.
 
 **Transactions:** when several writes must succeed or fail together, a service wraps them in `transactionRunner.run(async (tx) => { ... })` and calls `repository.withTransaction(tx)` for each repository involved. If the block throws, everything is rolled back.
 

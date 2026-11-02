@@ -30,10 +30,12 @@ describe('CompaniesService', () => {
     ),
     save: vi.fn((company: Company) => Promise.resolve(company)),
     softDelete: vi.fn(),
+    withTransaction: vi.fn(),
   };
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    repo.withTransaction.mockReturnValue(repo);
     const moduleRef = await Test.createTestingModule({
       providers: [
         CompaniesService,
@@ -74,19 +76,22 @@ describe('CompaniesService', () => {
     expect(updated.description).toBe('old');
   });
 
-  it('remove soft-deletes the company through the repository', async () => {
+  it('remove soft-deletes the company inside the caller transaction', async () => {
     const company = makeCompany();
     repo.findOneBy.mockResolvedValue(company);
 
-    await service.remove(ID);
+    await service.remove(ID, 'tx' as never);
 
+    expect(repo.withTransaction).toHaveBeenCalledWith('tx');
     expect(repo.softDelete).toHaveBeenCalledWith(company);
   });
 
   it('remove throws NotFoundException for a missing company', async () => {
     repo.findOneBy.mockResolvedValue(null);
 
-    await expect(service.remove(ID)).rejects.toBeInstanceOf(NotFoundException);
+    await expect(service.remove(ID, 'tx' as never)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
     expect(repo.softDelete).not.toHaveBeenCalled();
   });
 });

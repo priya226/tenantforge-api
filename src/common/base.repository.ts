@@ -79,6 +79,16 @@ export abstract class BaseRepository<T extends BaseEntity> {
     await this.repo.save(entity);
   }
 
+  // Soft-deletes every active row matching `where` in one UPDATE (no need to load them first).
+  // Used for cascades, e.g. "all users of company X". Returns how many rows were marked.
+  async softDeleteBy(where: FindOptionsWhere<T>): Promise<number> {
+    const result = await this.repo.update(
+      this.scopeWhere(where, {}) as FindOptionsWhere<T>,
+      { isDeleted: true } as unknown as Parameters<Repository<T>['update']>[1],
+    );
+    return result.affected ?? 0;
+  }
+
   // Adds isDeleted = false to the where clause. With an array (OR conditions),
   // it is added to each condition, so no branch can match a deleted row.
   protected scopeWhere(

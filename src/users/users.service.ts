@@ -8,7 +8,10 @@ import { isEmail } from 'class-validator';
 import { In, QueryFailedError } from 'typeorm';
 
 import { CompaniesService } from '../companies/companies.service.js';
-import { TransactionRunner } from '../database/transaction-runner.js';
+import {
+  type Transaction,
+  TransactionRunner,
+} from '../database/transaction-runner.js';
 import type { RoleName } from '../roles/role-name.js';
 import { RolesService } from '../roles/roles.service.js';
 import { normalizeEmail } from './normalize-email.js';
@@ -46,6 +49,21 @@ export class UsersService {
     private readonly rolesService: RolesService,
     private readonly transactions: TransactionRunner,
   ) {}
+
+  // Soft-deletes all users of a company inside the caller's transaction and returns their ids,
+  // so the caller (CompanyFacade) can clean up what belongs to them, e.g. role mappings.
+  async softDeleteByCompany(
+    companyId: string,
+    tx: Transaction,
+  ): Promise<string[]> {
+    const users = this.users.withTransaction(tx);
+    const members = await users.find({
+      where: { companyId },
+      select: { id: true },
+    });
+    await users.softDeleteBy({ companyId });
+    return members.map((u) => u.id);
+  }
 
   async findOne(id: string): Promise<User> {
     const user = await this.users.findOneBy({ id });

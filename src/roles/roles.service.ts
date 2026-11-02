@@ -3,7 +3,7 @@ import {
   ConflictException,
   Injectable,
 } from '@nestjs/common';
-import { QueryFailedError } from 'typeorm';
+import { In, QueryFailedError } from 'typeorm';
 
 import {
   type Transaction,
@@ -35,6 +35,19 @@ export class RolesService {
   async getUserRoles(userId: string): Promise<RoleName[]> {
     const mappings = await this.userRoles.findByUser(userId);
     return mappings.map((m) => m.role!.name).sort();
+  }
+
+  // Soft-deletes every role mapping of these users (used when the users themselves are deleted).
+  async removeAllRolesForUsers(
+    userIds: string[],
+    tx: Transaction,
+  ): Promise<void> {
+    if (userIds.length === 0) {
+      return;
+    }
+    await this.userRoles
+      .withTransaction(tx)
+      .softDeleteBy({ userId: In(userIds) });
   }
 
   // Ids of users holding a role. The caller filters out deleted users.
