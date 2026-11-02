@@ -4,8 +4,6 @@ import type { Transaction } from '../database/transaction-runner.js';
 import { Company } from './company.entity.js';
 import { CompanyRepository } from './company.repository.js';
 
-// What the service needs. The HTTP DTOs in api/companies implement these,
-// so this feature module doesn't depend on the HTTP layer.
 export interface CreateCompanyInput {
   name: string;
   description?: string | null;
@@ -16,15 +14,12 @@ export interface UpdateCompanyInput {
   description?: string | null;
 }
 
-// Business logic for companies only. It never calls other feature services:
-// anything that spans features (e.g. deleting a company's users) lives in a facade (api/).
-// All database calls go through CompanyRepository, which hides soft-deleted rows.
 @Injectable()
 export class CompaniesService {
   constructor(private readonly companies: CompanyRepository) {}
 
   findAll(): Promise<Company[]> {
-    return this.companies.find({ order: { createdAt: 'DESC' } });
+    return this.companies.findAllNewestFirst();
   }
 
   async findOne(id: string): Promise<Company> {
@@ -54,8 +49,6 @@ export class CompaniesService {
     return this.companies.save(company);
   }
 
-  // Soft-deletes the company row only, inside the caller's transaction.
-  // CompanyFacade.remove() also deletes everything the company owns.
   async remove(id: string, tx: Transaction): Promise<void> {
     const companies = this.companies.withTransaction(tx);
     const company = await companies.findOneBy({ id });

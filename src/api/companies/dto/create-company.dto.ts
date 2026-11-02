@@ -6,7 +6,6 @@ import type { CreateCompanyInput } from '../../../companies/companies.service.js
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
 
-// Body of POST /companies.
 export class CreateCompanyDto implements CreateCompanyInput {
   @Transform(trim)
   @IsString()

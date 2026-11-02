@@ -1,7 +1,8 @@
-import type { EntityManager, Repository } from 'typeorm';
+import { type EntityManager, QueryFailedError, type Repository } from 'typeorm';
 
 import { BaseEntity } from './base.entity.js';
 import { BaseRepository } from './base.repository.js';
+import { UniqueViolationError } from './unique-violation.error.js';
 
 class Thing extends BaseEntity {
   name!: string;
@@ -75,6 +76,23 @@ describe('BaseRepository', () => {
     );
   });
 
+  it('save turns a Postgres unique violation (23505) into UniqueViolationError', async () => {
+    raw.save.mockRejectedValueOnce(
+      new QueryFailedError('INSERT ...', [], { code: '23505' } as never),
+    );
+    await expect(repo.save(new Thing())).rejects.toBeInstanceOf(
+      UniqueViolationError,
+    );
+  });
+
+  it('save rethrows other database errors unchanged', async () => {
+    const error = new QueryFailedError('INSERT ...', [], {
+      code: '23503',
+    } as never);
+    raw.save.mockRejectedValueOnce(error);
+    await expect(repo.save(new Thing())).rejects.toBe(error);
+  });
+
   it('withTransaction returns a copy that queries through the transaction and still filters deleted rows', async () => {
     const txRaw = { find: vi.fn().mockResolvedValue([]) };
     const tx = {
@@ -84,8 +102,8 @@ describe('BaseRepository', () => {
     const inTx = repo.withTransaction(tx);
     await inTx.find();
 
-    expect(inTx).toBeInstanceOf(ThingRepository); // feature methods are kept
+    expect(inTx).toBeInstanceOf(ThingRepository);
     expect(txRaw.find).toHaveBeenCalledWith({ where: { isDeleted: false } });
-    expect(raw.find).not.toHaveBeenCalled(); // the original repository is untouched
+    expect(raw.find).not.toHaveBeenCalled();
   });
 });

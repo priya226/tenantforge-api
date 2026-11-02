@@ -149,30 +149,32 @@ docker compose exec postgres psql -U postgres -d tenantforge
 src/
 ├─ main.ts          Entry point: creates the Nest app and starts the HTTP server
 ├─ app.module.ts    Root module: config, database, ApiModule
-├─ api/             HTTP layer: controllers + facades (one folder per resource)
-│  ├─ api.module.ts        Imports the feature modules the facades coordinate
-│  └─ companies/
-│     ├─ dto/                     Request bodies with validation rules
-│     ├─ companies.controller.ts  HTTP routes; calls CompanyFacade
-│     └─ company.facade.ts        Use cases; remove() cascades company → users → roles in one transaction
+├─ api/             HTTP layer: controllers + the one facade they all call
+│  ├─ api.module.ts          Imports the feature modules the facade uses
+│  ├─ feature-flag.facade.ts FeatureFlagFacade: the single entry point; calls the right service(s), no business rules
+│  ├─ companies/
+│  │  ├─ dto/                     Request bodies with validation rules
+│  │  └─ companies.controller.ts  HTTP routes
+│  └─ users/
+│     ├─ dto/                 Bodies of POST /users and PUT /users/:id/roles
+│     └─ users.controller.ts  HTTP routes
 ├─ common/
 │  ├─ base.entity.ts      Shared columns: id, created_at, updated_at, is_deleted
-│  └─ base.repository.ts  Wraps a TypeORM repository; hides soft-deleted rows by default
+│  ├─ base.repository.ts  Wraps a TypeORM repository; hides soft-deleted rows; turns Postgres unique violations into UniqueViolationError
+│  └─ unique-violation.error.ts  The error services catch for duplicates (instead of a Postgres code)
 ├─ companies/              Feature module, no controller
 │  ├─ companies.service.ts     Company rules only (no database calls, no other features)
 │  ├─ company.repository.ts    All database calls for companies
 │  ├─ companies.module.ts
 │  └─ company.entity.ts   The company table
-├─ users/
-│  ├─ dto/                 Request body for creating a user
-│  ├─ users.controller.ts  HTTP routes
-│  ├─ users.service.ts     Create (company check, duplicate email, argon2 hash) and verifyCredentials for login
+├─ users/                  Feature module, no controller
+│  ├─ users.service.ts     Users only: create (duplicate email, argon2 hash), soft delete by company, verifyCredentials for login
 │  ├─ user.repository.ts   All database calls for users; findForLogin is the only query that loads the hash
 │  ├─ users.module.ts
 │  ├─ user.entity.ts       The app_user table ("user" is a reserved word in Postgres)
 │  ├─ normalize-email.ts   Trim + lowercase, used wherever an email is stored or looked up
 │  └─ password-policy.ts   Password length rules (12–128), shared by the DTO and seed:admin
-├─ roles/                  No controller; used by UsersModule (roles never imports users)
+├─ roles/                  Feature module, no controller (roles never imports users)
 │  ├─ role-name.ts           The 3 role names (must match the rows inserted by V3)
 │  ├─ role.entity.ts         The role table
 │  ├─ user-role.entity.ts    The user_role mapping table (a user can hold several roles)
@@ -181,7 +183,7 @@ src/
 │  ├─ roles.service.ts       Company rule, replace a user's set of roles
 │  └─ roles.module.ts
 ├─ seed/
-│  └─ seed-admin.ts       npm run seed:admin: starts Nest without HTTP, creates the first platform admin
+│  └─ seed-admin.ts       npm run seed:admin: starts Nest without HTTP, calls FeatureFlagFacade.ensurePlatformAdmin
 └─ database/
    ├─ database.module.ts     TypeORM connection to Postgres, configured from .env
    └─ transaction-runner.ts  Runs a block of work in one DB transaction
@@ -189,11 +191,47 @@ db/
 └─ migration/             Flyway SQL migrations
 ```
 
-**Layers:** controller (HTTP) → facade (use case, coordinates features, owns cross-feature transactions) → service (rules for one feature) → repository (database). Feature services never call each other; the facade does. Users is still being moved to this shape. Each feature has its own repository that extends `BaseRepository`. Every read adds `is_deleted = false` automatically. Pass `{ includeDeleted: true }` to also get deleted rows. Services never call TypeORM directly.
+**Layers:** controller (HTTP) → `FeatureFlagFacade`, one for the whole app (only calls services in order, owns cross-feature transactions, combines results; no business rules) → service (rules for one feature) → repository (database). Feature services never call each other; the facade does. Every controller calls the same facade. Each feature has its own repository that extends `BaseRepository`. Every read adds `is_deleted = false` automatically. Pass `{ includeDeleted: true }` to also get deleted rows. Services never call TypeORM directly.
 
-**Transactions:** when several writes must succeed or fail together, a service wraps them in `transactionRunner.run(async (tx) => { ... })` and calls `repository.withTransaction(tx)` for each repository involved. If the block throws, everything is rolled back.
+**Who does what:**
+
+| Layer | Does | Never |
+|---|---|---|
+| Controller | Routes, DTO validation, `ParseUUIDPipe`, response shape | Call services or repositories |
+| `FeatureFlagFacade` | Calls services in order, owns cross-feature transactions, combines results | Business rules, repositories, TypeORM |
+| Service | Business rules for one feature: defaults, validation, duplicates (409), 404s, hashing | Call another service, import TypeORM, build queries |
+| Repository | All DB access: query operators/options, `is_deleted` filter, Postgres error → `UniqueViolationError` | HTTP errors, business rules (e.g. email normalizing) |
+
+**Transactions:** when several writes must succeed or fail together, a facade (or a service, for writes inside one feature) wraps them in `transactionRunner.run(async (tx) => { ... })` and calls `repository.withTransaction(tx)` for each repository involved. If the block throws, everything is rolled back.
 
 The schema is changed only through Flyway migrations in `db/migration/`. TypeORM's `synchronize` is turned off.
+
+## Design rules
+
+**Modules**
+- Feature modules (`companies/`, `users/`, `roles/`) have no controllers and never import each other. They export only their service, never the repository.
+- `ApiModule` imports the feature modules, so dependencies only point downwards.
+- `roles/` uses a small `RoleHolder { id, companyId }` type instead of importing `User`, so it doesn't depend on `users/`.
+
+**Repositories**
+- `BaseRepository` wraps a TypeORM repository instead of extending it. TypeORM's own methods stay private, so nothing can skip the `is_deleted` filter by accident.
+- `withTransaction(tx)` returns a copy of the repository that runs its queries inside `tx`.
+- Services may use plain field filters (`findOneBy({ id })`), `create` and `save`. Anything with a TypeORM operator or option (`In`, `order`, `select`, relations) gets a named repository method.
+- A write that breaks a unique index throws `UniqueViolationError`. The service turns it into 409. This covers two requests racing past the duplicate check.
+
+**Validation**
+- The global `ValidationPipe` uses `whitelist`, `forbidNonWhitelisted` and `transform`. Unknown fields are rejected with 400, and bodies become DTO instances.
+- DTOs trim names and emails. Passwords are not trimmed.
+- Services check the same rules again (email format, password 12–128), because not every caller goes through HTTP (e.g. `seed:admin`).
+
+**Users and passwords**
+- Emails are lowercased and trimmed by `UsersService` before they are stored or looked up.
+- `password_hash` is `select: false`. `UserRepository.findForLogin` is the only query that loads it, and the hash is removed before a user leaves the service.
+- Login runs an argon2 verify even for unknown emails, so response time doesn't reveal which emails have accounts.
+
+**Deleting a company**
+- `FeatureFlagFacade.removeCompany` soft-deletes the company, its users and their role mappings in one transaction.
+- When a new feature owns company data (flags, API keys, settings), its cleanup step is added there.
 
 ## Project status
 

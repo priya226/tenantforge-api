@@ -8,13 +8,8 @@ import { RolesService } from './roles.service.js';
 import { UserRoleRepository } from './user-role.repository.js';
 import { UserRole } from './user-role.entity.js';
 
-// Roles and user ↔ role mappings. No controller: the role endpoints live under /users/:id/roles
-// in UsersModule, which imports this module. This module never imports UsersModule (no cycle).
 @Module({
-  imports: [
-    TypeOrmModule.forFeature([Role, UserRole]),
-    DatabaseModule, // for TransactionRunner
-  ],
+  imports: [TypeOrmModule.forFeature([Role, UserRole]), DatabaseModule],
   providers: [RolesService, RoleRepository, UserRoleRepository],
   exports: [RolesService],
 })

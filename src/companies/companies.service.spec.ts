@@ -21,9 +21,8 @@ function makeCompany(overrides: Partial<Company> = {}): Company {
 
 describe('CompaniesService', () => {
   let service: CompaniesService;
-  // A fake CompanyRepository. The isDeleted filtering itself is tested in base.repository.spec.ts.
   const repo = {
-    find: vi.fn(),
+    findAllNewestFirst: vi.fn(),
     findOneBy: vi.fn(),
     create: vi.fn((data: Partial<Company>) =>
       Object.assign(new Company(), data),
@@ -46,11 +45,10 @@ describe('CompaniesService', () => {
   });
 
   it('findAll lists companies newest first', async () => {
-    repo.find.mockResolvedValue([makeCompany()]);
+    repo.findAllNewestFirst.mockResolvedValue([makeCompany()]);
 
-    await service.findAll();
-
-    expect(repo.find).toHaveBeenCalledWith({ order: { createdAt: 'DESC' } });
+    expect(await service.findAll()).toHaveLength(1);
+    expect(repo.findAllNewestFirst).toHaveBeenCalledOnce();
   });
 
   it('findOne throws NotFoundException when the repository finds nothing', async () => {

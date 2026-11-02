@@ -8,40 +8,40 @@ import {
   Put,
 } from '@nestjs/common';
 
-import type { RoleName } from '../roles/role-name.js';
+import type { RoleName } from '../../roles/role-name.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
 import { UpdateUserRolesDto } from './dto/update-user-roles.dto.js';
-import { type UserWithRoles, UsersService } from './users.service.js';
+import {
+  FeatureFlagFacade,
+  type UserWithRoles,
+} from '../feature-flag.facade.js';
 
-// No authentication yet. Once auth exists, only admins will be able to create users
-// and change roles, and only inside their own company.
 @Controller('users')
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(private readonly facade: FeatureFlagFacade) {}
 
   @Post()
   create(@Body() dto: CreateUserDto): Promise<UserWithRoles> {
-    return this.usersService.create(dto);
+    return this.facade.createUser(dto);
   }
 
   @Get(':id')
   findOne(@Param('id', ParseUUIDPipe) id: string): Promise<UserWithRoles> {
-    return this.usersService.findOneWithRoles(id);
+    return this.facade.findUser(id);
   }
 
   @Get(':id/roles')
   async getRoles(
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<{ roles: RoleName[] }> {
-    return { roles: await this.usersService.getRoles(id) };
+    return { roles: await this.facade.getUserRoles(id) };
   }
 
-  // Replaces the whole set: { "roles": ["COMPANY_ADMIN"] } leaves the user with exactly that role.
   @Put(':id/roles')
   async setRoles(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateUserRolesDto,
   ): Promise<{ roles: RoleName[] }> {
-    return { roles: await this.usersService.setRoles(id, dto.roles) };
+    return { roles: await this.facade.setUserRoles(id, dto.roles) };
   }
 }
