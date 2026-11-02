@@ -37,6 +37,11 @@ export class RolesService {
     return mappings.map((m) => m.role!.name).sort();
   }
 
+  // Ids of users holding a role. The caller filters out deleted users.
+  getUserIdsWithRole(name: RoleName): Promise<string[]> {
+    return this.userRoles.findUserIdsWithRole(name);
+  }
+
   // Throws 400 unless the roles fit the user's company:
   // a user without a company may only be PLATFORM_ADMIN,
   // a user with a company may hold any role except PLATFORM_ADMIN.

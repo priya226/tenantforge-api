@@ -4,13 +4,15 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import * as argon2 from 'argon2';
-import { QueryFailedError } from 'typeorm';
+import { isEmail } from 'class-validator';
+import { In, QueryFailedError } from 'typeorm';
 
 import { CompaniesService } from '../companies/companies.service.js';
 import { TransactionRunner } from '../database/transaction-runner.js';
 import type { RoleName } from '../roles/role-name.js';
 import { RolesService } from '../roles/roles.service.js';
 import { normalizeEmail } from './normalize-email.js';
+import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from './password-policy.js';
 import { User } from './user.entity.js';
 import { UserRepository } from './user.repository.js';
 
@@ -64,8 +66,58 @@ export class UsersService {
     // 404 if the company doesn't exist or is soft-deleted.
     await this.companiesService.findOne(input.companyId);
 
+    return this.createWithRoles({
+      ...input,
+      roles: input.roles ?? DEFAULT_ROLES,
+    });
+  }
+
+  // Used by `npm run seed:admin`. Creates the first platform admin (no company, PLATFORM_ADMIN role)
+  // unless an active platform admin already exists. Safe to run any number of times.
+  async ensurePlatformAdmin(input: {
+    name: string;
+    email: string;
+    password: string;
+  }): Promise<'created' | 'already-exists'> {
+    const adminIds =
+      await this.rolesService.getUserIdsWithRole('PLATFORM_ADMIN');
+    // count() skips soft-deleted users, so a deleted admin doesn't count.
+    if (adminIds.length > 0 && (await this.users.count({ id: In(adminIds) }))) {
+      return 'already-exists';
+    }
+
+    // The HTTP DTO isn't involved here, so check the same rules by hand.
+    if (!isEmail(input.email.trim())) {
+      throw new Error(`Not a valid email: "${input.email}"`);
+    }
+    if (
+      input.password.length < PASSWORD_MIN_LENGTH ||
+      input.password.length > PASSWORD_MAX_LENGTH
+    ) {
+      throw new Error(
+        `Password must be ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} characters`,
+      );
+    }
+
+    await this.createWithRoles({
+      ...input,
+      companyId: null,
+      roles: ['PLATFORM_ADMIN'],
+    });
+    return 'created';
+  }
+
+  // Shared by create() and ensurePlatformAdmin(): checks, hashes, and saves the user and
+  // its roles in one transaction. The caller has already checked the company exists.
+  private async createWithRoles(input: {
+    companyId: string | null;
+    name: string;
+    email: string;
+    password: string;
+    roles: RoleName[];
+  }): Promise<UserWithRoles> {
     // Check the roles before the slow argon2 hash, so a bad request fails fast.
-    const roleNames = input.roles ?? DEFAULT_ROLES;
+    const roleNames = input.roles;
     this.rolesService.assertRolesFitUser(input.companyId, roleNames);
 
     const email = normalizeEmail(input.email);

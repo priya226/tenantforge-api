@@ -24,6 +24,7 @@ npm install
 cp .env.example .env
 docker compose up -d
 npm run db:migrate
+npm run seed:admin    # first platform admin, from BOOTSTRAP_ADMIN_* in .env
 npm run start:dev
 ```
 
@@ -42,8 +43,15 @@ The app reads its settings from a `.env` file in the project root, loaded by `@n
 | `DB_USER` | Postgres user | `postgres` |
 | `DB_PASSWORD` | Postgres password | must match `POSTGRES_PASSWORD` in `docker-compose.yml` |
 | `DB_NAME` | Database name | `tenantforge` |
+| `BOOTSTRAP_ADMIN_EMAIL` | Email of the first platform admin (used only by `seed:admin`) | `admin@tenantforge.local` |
+| `BOOTSTRAP_ADMIN_PASSWORD` | That admin's password, 12–128 characters (used only by `seed:admin`) | any local value; a real secret elsewhere |
+| `BOOTSTRAP_ADMIN_NAME` | Optional display name, default `Platform Admin` | `Platform Admin` |
 
-The app fails at startup if any of these variables is missing.
+The app fails at startup if any `DB_*` variable is missing. `seed:admin` fails if a required `BOOTSTRAP_ADMIN_*` variable is missing.
+
+### The first platform admin
+
+`npm run seed:admin` creates the first platform admin: a user with no company and the `PLATFORM_ADMIN` role. It does nothing if an active platform admin already exists, so it's safe to run again. It is a seed command, not a migration, for two reasons: the password must never be committed to git, and each environment sets its own admin.
 
 ## Database
 
@@ -133,6 +141,7 @@ docker compose exec postgres psql -U postgres -d tenantforge
 | `npm run format` | Formats the code with Prettier |
 | `npm run db:migrate` | Applies pending database migrations with Flyway |
 | `npm run db:info` | Lists every migration and whether it has been applied |
+| `npm run seed:admin` | Builds the app, then creates the first platform admin from `.env` if none exists |
 
 ## Project structure
 
@@ -157,7 +166,8 @@ src/
 │  ├─ user.repository.ts   All database calls for users; findForLogin is the only query that loads the hash
 │  ├─ users.module.ts
 │  ├─ user.entity.ts       The app_user table ("user" is a reserved word in Postgres)
-│  └─ normalize-email.ts   Trim + lowercase, used wherever an email is stored or looked up
+│  ├─ normalize-email.ts   Trim + lowercase, used wherever an email is stored or looked up
+│  └─ password-policy.ts   Password length rules (12–128), shared by the DTO and seed:admin
 ├─ roles/                  No controller; used by UsersModule (roles never imports users)
 │  ├─ role-name.ts           The 3 role names (must match the rows inserted by V3)
 │  ├─ role.entity.ts         The role table
@@ -166,6 +176,8 @@ src/
 │  ├─ user-role.repository.ts  A user's active role mappings
 │  ├─ roles.service.ts       Company rule, replace a user's set of roles
 │  └─ roles.module.ts
+├─ seed/
+│  └─ seed-admin.ts       npm run seed:admin: starts Nest without HTTP, creates the first platform admin
 └─ database/
    ├─ database.module.ts     TypeORM connection to Postgres, configured from .env
    └─ transaction-runner.ts  Runs a block of work in one DB transaction
@@ -181,4 +193,4 @@ The schema is changed only through Flyway migrations in `db/migration/`. TypeORM
 
 ## Project status
 
-Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. The companies API (CRUD with soft delete) and the users API (one company per user, argon2-hashed passwords) work end to end. Roles, authentication (JWT) and the feature flag modules come next.
+Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. Working end to end: the companies API (CRUD with soft delete), the users API (one company per user, argon2-hashed passwords), roles (a user can hold several; managed through `/users/:id/roles`), and `seed:admin` for the first platform admin. Authentication (JWT), tenant scoping and the feature flag modules come next.
