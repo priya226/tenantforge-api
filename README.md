@@ -1,13 +1,22 @@
 # TenantForge API
 
-Backend API for **TenantForge**, a multi-tenant feature flag service. Product teams turn features on or off for each customer without redeploying, using percentage rollouts and attribute-based rules.
+Backend API for **TenantForge**, a multi-tenant feature-flag and config service. Product teams turn features on or off and change app config for each customer without redeploying, using percentage rollouts, attribute-based rules, versioned changes with rollback, and live updates.
+
+## Design docs
+
+- [High-level design](docs/hld.md): requirements, estimates, architecture, key decisions, flows, roadmap
+- [Low-level design](docs/lld.md): code layers, schema, optimistic locking, rollback, APIs, decisions log
 
 ## Tech stack
 
+In use now:
+
 - [NestJS](https://nestjs.com/) 12
 - TypeScript (strict mode, ES modules)
-- [PostgreSQL](https://www.postgresql.org/) 17, run locally with Docker Compose
+- [PostgreSQL](https://www.postgresql.org/) 17 with [Flyway](https://flywaydb.org/) migrations, run locally with Docker Compose
 - [Vitest](https://vitest.dev/) for tests, [oxlint](https://oxc.rs/) for linting
+
+Planned (see the [roadmap](docs/hld.md#11-roadmap)): Redis (cache + pub/sub), WebSockets (live delivery to SDKs), React and Angular micro-frontend console.
 
 ## Prerequisites
 
@@ -235,4 +244,4 @@ The schema is changed only through Flyway migrations in `db/migration/`. TypeORM
 
 ## Project status
 
-Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. Working end to end: the companies API (CRUD with soft delete), the users API (one company per user, argon2-hashed passwords), roles (a user can hold several; managed through `/users/:id/roles`), and `seed:admin` for the first platform admin. Authentication (JWT), tenant scoping and the feature flag modules come next.
+Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. Working end to end: the companies API (CRUD with soft delete), the users API (one company per user, argon2-hashed passwords), roles (a user can hold several; managed through `/users/:id/roles`), and `seed:admin` for the first platform admin. Next: the rest of the users API, then authentication (JWT) and tenant scoping, then flags and config with versioning, optimistic locking (409), audit and rollback. See the [roadmap](docs/hld.md#11-roadmap).
