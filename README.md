@@ -82,8 +82,15 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |
-| `POST` | `/users` | `{ "companyId": uuid, "name": string, "email": string, "password": string }` | `201` with the created user (never includes the password hash) |
-| `GET` | `/users/:id` | | `200` with the user, or `404` |
+| `POST` | `/users` | `{ "companyId": uuid, "name": string, "email": string, "password": string, "roles"?: string[] }` | `201` with the created user and its `roles` (never includes the password hash) |
+| `GET` | `/users/:id` | | `200` with the user and its `roles`, or `404` |
+| `GET` | `/users/:id/roles` | | `200` `{ "roles": [...] }`, or `404` |
+| `PUT` | `/users/:id/roles` | `{ "roles": string[] }` | `200` `{ "roles": [...] }`. **Replaces** the whole set: removed roles are soft-deleted, new ones added |
+
+**Roles:** `PLATFORM_ADMIN`, `COMPANY_ADMIN`, `VIEWER`. They are inserted by the V3 migration, and a user can hold several.
+- `roles` on create is optional and defaults to `["VIEWER"]`. The user and its roles are saved in one transaction, so there is never a user without a role.
+- A user with a company can't be `PLATFORM_ADMIN`, and a user without a company can only be `PLATFORM_ADMIN`. Breaking either rule returns `400`.
+- An empty list or an unknown role name returns `400`. If two requests change the same user's roles at once, the loser gets `409`.
 
 - Each user belongs to one company (`company_id`). The company must exist and not be deleted, otherwise the response is `404`. A `NULL` company is reserved for platform admins, who can't be created through this endpoint.
 - `email` is trimmed and lowercased before saving. It must be unique among users that are not deleted, so a duplicate returns `409`.
@@ -97,11 +104,12 @@ The schema is managed by [Flyway](https://documentation.red-gate.com/flyway), ru
 ```
 db/migration/
 ├─ V1__create_company.sql
-└─ V2__create_app_user.sql
+├─ V2__create_app_user.sql
+└─ V3__create_role_and_user_role.sql   (also inserts the 3 roles)
 ```
 
 - Name files `V<version>__<description>.sql`, with two underscores. Flyway runs them in version order and records each one in the `flyway_schema_history` table, so each file runs only once.
-- Never edit a migration that has already been applied. Flyway stores a checksum and refuses to run if an applied file changes. To change the schema, add a new file, for example `V3__add_company_slug.sql`.
+- Never edit a migration that has already been applied. Flyway stores a checksum and refuses to run if an applied file changes. To change the schema, add a new file, for example `V4__add_company_slug.sql`.
 - TypeORM never changes the schema (`synchronize: false`). When you change an entity, write the matching migration by hand and keep the column names and types identical.
 - The `flyway` service uses the `tools` profile, so `docker compose up` doesn't start it. Run it through the npm scripts.
 
@@ -150,13 +158,24 @@ src/
 │  ├─ users.module.ts
 │  ├─ user.entity.ts       The app_user table ("user" is a reserved word in Postgres)
 │  └─ normalize-email.ts   Trim + lowercase, used wherever an email is stored or looked up
+├─ roles/                  No controller; used by UsersModule (roles never imports users)
+│  ├─ role-name.ts           The 3 role names (must match the rows inserted by V3)
+│  ├─ role.entity.ts         The role table
+│  ├─ user-role.entity.ts    The user_role mapping table (a user can hold several roles)
+│  ├─ role.repository.ts     Look up roles by name
+│  ├─ user-role.repository.ts  A user's active role mappings
+│  ├─ roles.service.ts       Company rule, replace a user's set of roles
+│  └─ roles.module.ts
 └─ database/
-   └─ database.module.ts  TypeORM connection to Postgres, configured from .env
+   ├─ database.module.ts     TypeORM connection to Postgres, configured from .env
+   └─ transaction-runner.ts  Runs a block of work in one DB transaction
 db/
 └─ migration/             Flyway SQL migrations
 ```
 
 **Layers:** controller (HTTP) → service (business logic) → repository (database). Each feature has its own repository that extends `BaseRepository`. Every read adds `is_deleted = false` automatically. Pass `{ includeDeleted: true }` to also get deleted rows. Services never call TypeORM directly.
+
+**Transactions:** when several writes must succeed or fail together, a service wraps them in `transactionRunner.run(async (tx) => { ... })` and calls `repository.withTransaction(tx)` for each repository involved. If the block throws, everything is rolled back.
 
 The schema is changed only through Flyway migrations in `db/migration/`. TypeORM's `synchronize` is turned off.
 

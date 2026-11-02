@@ -1,13 +1,18 @@
 import { Transform } from 'class-transformer';
 import {
+  ArrayNotEmpty,
+  IsArray,
   IsEmail,
+  IsIn,
   IsNotEmpty,
+  IsOptional,
   IsString,
   IsUUID,
   MaxLength,
   MinLength,
 } from 'class-validator';
 
+import { ROLE_NAMES, type RoleName } from '../../roles/role-name.js';
 import type { CreateUserInput } from '../users.service.js';
 
 const trim = ({ value }: { value: unknown }) =>
@@ -36,4 +41,11 @@ export class CreateUserDto implements CreateUserInput {
   @MinLength(12)
   @MaxLength(128)
   password!: string;
+
+  // Optional; the service defaults to ["VIEWER"]. Whether the roles fit the company is checked in RolesService.
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsIn(ROLE_NAMES, { each: true })
+  roles?: RoleName[];
 }

@@ -1,5 +1,6 @@
 import type {
   DeepPartial,
+  EntityManager,
   FindManyOptions,
   FindOneOptions,
   FindOptionsWhere,
@@ -25,6 +26,16 @@ type Where<T> = FindOptionsWhere<T> | FindOptionsWhere<T>[];
  */
 export abstract class BaseRepository<T extends BaseEntity> {
   protected constructor(protected readonly repo: Repository<T>) {}
+
+  // Returns a copy of this repository whose queries run inside `tx`.
+  // The copy keeps all methods (including the isDeleted filter and feature-specific ones),
+  // only the underlying TypeORM repository is swapped for the transaction's one.
+  withTransaction(tx: EntityManager): this {
+    const copy = Object.create(Object.getPrototypeOf(this) as object) as this;
+    return Object.assign(copy, this, {
+      repo: tx.getRepository<T>(this.repo.target),
+    });
+  }
 
   find(
     options: FindManyOptions<T> = {},
