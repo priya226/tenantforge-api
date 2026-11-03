@@ -3,25 +3,23 @@ import {
   ConflictException,
   Injectable,
 } from '@nestjs/common';
-import { QueryFailedError } from 'typeorm';
 
+import { UniqueViolationError } from '../common/unique-violation.error.js';
 import {
   type Transaction,
   TransactionRunner,
 } from '../database/transaction-runner.js';
 import type { RoleName } from './role-name.js';
+import { Role } from './role.entity.js';
 import { RoleRepository } from './role.repository.js';
 import { UserRoleRepository } from './user-role.repository.js';
 
-// The parts of a user the roles logic needs. Defined here (not imported from users/)
-// so the roles module doesn't depend on the users module.
 export interface RoleHolder {
   id: string;
   companyId: string | null;
 }
 
-// Postgres error code for a unique constraint violation.
-const UNIQUE_VIOLATION = '23505';
+const DEFAULT_NEW_USER_ROLES: RoleName[] = ['VIEWER'];
 
 @Injectable()
 export class RolesService {
@@ -31,15 +29,41 @@ export class RolesService {
     private readonly transactions: TransactionRunner,
   ) {}
 
-  // The names of the roles a user currently holds, sorted.
+  listRoles(): Promise<Role[]> {
+    return this.roles.findAllByName();
+  }
+
   async getUserRoles(userId: string): Promise<RoleName[]> {
     const mappings = await this.userRoles.findByUser(userId);
     return mappings.map((m) => m.role!.name).sort();
   }
 
+  async removeAllRolesForUsers(
+    userIds: string[],
+    tx: Transaction,
+  ): Promise<void> {
+    if (userIds.length === 0) {
+      return;
+    }
+    await this.userRoles.withTransaction(tx).softDeleteByUserIds(userIds);
+  }
+
+  getUserIdsWithRole(name: RoleName): Promise<string[]> {
+    return this.userRoles.findUserIdsWithRole(name);
+  }
+
   // Throws 400 unless the roles fit the user's company:
   // a user without a company may only be PLATFORM_ADMIN,
   // a user with a company may hold any role except PLATFORM_ADMIN.
+  resolveNewUserRoles(
+    companyId: string | null,
+    requested?: RoleName[],
+  ): RoleName[] {
+    const names = requested ?? DEFAULT_NEW_USER_ROLES;
+    this.assertRolesFitUser(companyId, names);
+    return names;
+  }
+
   assertRolesFitUser(companyId: string | null, names: RoleName[]): void {
     if (names.length === 0) {
       throw new BadRequestException('A user must have at least one role');
@@ -59,15 +83,11 @@ export class RolesService {
     }
   }
 
-  // Makes the user's roles exactly `names`: removed roles are soft-deleted, new ones are added,
-  // roles the user keeps are left untouched. Returns the final role names, sorted.
-  //
-  // Pass `tx` to join a transaction the caller already started (e.g. "create user + roles").
-  // Without it, this method runs in its own transaction.
   async replaceUserRoles(
     user: RoleHolder,
     names: RoleName[],
     tx?: Transaction,
+    companyUserIds: string[] = [],
   ): Promise<RoleName[]> {
     this.assertRolesFitUser(user.companyId, names);
     const wanted = [...new Set(names)];
@@ -78,7 +98,6 @@ export class RolesService {
 
       const wantedRoles = await roles.findByNames(wanted);
       if (wantedRoles.length !== wanted.length) {
-        // ROLE_NAMES in code and the rows from V3 have drifted apart. A bug, not a client error.
         throw new Error(
           `Role rows missing in the database for: ${wanted.join(', ')}`,
         );
@@ -87,6 +106,19 @@ export class RolesService {
 
       const current = await userRoles.findByUser(user.id);
       const currentIds = new Set(current.map((m) => m.roleId));
+
+      const losesCompanyAdmin =
+        current.some((m) => m.role?.name === 'COMPANY_ADMIN') &&
+        !wanted.includes('COMPANY_ADMIN');
+      if (losesCompanyAdmin) {
+        const otherAdmins = await userRoles.countUsersWithRole(
+          'COMPANY_ADMIN',
+          companyUserIds.filter((id) => id !== user.id),
+        );
+        if (otherAdmins === 0) {
+          throw new ConflictException('Company must keep at least one admin');
+        }
+      }
 
       for (const mapping of current) {
         if (!wantedIds.has(mapping.roleId)) {
@@ -106,12 +138,7 @@ export class RolesService {
     try {
       return await (tx ? work(tx) : this.transactions.run(work));
     } catch (error) {
-      // Two requests changing the same user's roles at once can both try to add the same role.
-      // The unique index rejects the second one; report it as 409, not 500.
-      if (
-        error instanceof QueryFailedError &&
-        (error.driverError as { code?: string }).code === UNIQUE_VIOLATION
-      ) {
+      if (error instanceof UniqueViolationError) {
         throw new ConflictException(
           "This user's roles were changed at the same time. Please try again.",
         );

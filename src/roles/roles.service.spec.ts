@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { QueryFailedError } from 'typeorm';
 
+import { UniqueViolationError } from '../common/unique-violation.error.js';
 import { TransactionRunner } from '../database/transaction-runner.js';
 import type { RoleName } from './role-name.js';
 import { Role } from './role.entity.js';
@@ -15,7 +15,6 @@ const COMPANY_ID = '3f2b9c1e-8d4a-4c1b-9e2f-0a1b2c3d4e5f';
 const companyUser = { id: USER_ID, companyId: COMPANY_ID };
 const platformUser = { id: USER_ID, companyId: null };
 
-// The 3 rows V3 inserts, with fake ids.
 const ROLES: Record<RoleName, Role> = {
   PLATFORM_ADMIN: Object.assign(new Role(), {
     id: 'r-pa',
@@ -40,11 +39,16 @@ function mapping(name: RoleName): UserRole {
 describe('RolesService', () => {
   let service: RolesService;
 
-  // Fake repositories. withTransaction returns the same fake, so calls made inside
-  // the transaction show up on these mocks.
   const roles = {
     findByNames: vi.fn((names: RoleName[]) =>
       Promise.resolve(names.map((n) => ROLES[n])),
+    ),
+    findAllByName: vi.fn(() =>
+      Promise.resolve([
+        ROLES.COMPANY_ADMIN,
+        ROLES.PLATFORM_ADMIN,
+        ROLES.VIEWER,
+      ]),
     ),
     withTransaction: vi.fn(),
   };
@@ -55,6 +59,7 @@ describe('RolesService', () => {
     ),
     save: vi.fn((m: UserRole) => Promise.resolve(m)),
     softDelete: vi.fn(),
+    countUsersWithRole: vi.fn(),
     withTransaction: vi.fn(),
   };
   const transactions = {
@@ -76,6 +81,64 @@ describe('RolesService', () => {
       ],
     }).compile();
     service = moduleRef.get(RolesService);
+  });
+
+  describe('last company admin', () => {
+    const OTHER_ID = '9b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
+
+    it('rejects removing COMPANY_ADMIN from the last admin with 409', async () => {
+      userRoles.findByUser.mockResolvedValue([mapping('COMPANY_ADMIN')]);
+      userRoles.countUsersWithRole.mockResolvedValue(0);
+
+      await expect(
+        service.replaceUserRoles(companyUser, ['VIEWER'], 'tx' as never, [
+          USER_ID,
+          OTHER_ID,
+        ]),
+      ).rejects.toThrow('Company must keep at least one admin');
+      expect(userRoles.countUsersWithRole).toHaveBeenCalledWith(
+        'COMPANY_ADMIN',
+        [OTHER_ID],
+      );
+      expect(userRoles.softDelete).not.toHaveBeenCalled();
+      expect(userRoles.save).not.toHaveBeenCalled();
+    });
+
+    it('allows the demotion while another admin remains', async () => {
+      userRoles.findByUser.mockResolvedValue([mapping('COMPANY_ADMIN')]);
+      userRoles.countUsersWithRole.mockResolvedValue(1);
+
+      await expect(
+        service.replaceUserRoles(companyUser, ['VIEWER'], 'tx' as never, [
+          USER_ID,
+          OTHER_ID,
+        ]),
+      ).resolves.toEqual(['VIEWER']);
+      expect(userRoles.softDelete).toHaveBeenCalledOnce();
+    });
+
+    it('does not count admins when the user keeps COMPANY_ADMIN', async () => {
+      userRoles.findByUser.mockResolvedValue([mapping('COMPANY_ADMIN')]);
+
+      await service.replaceUserRoles(
+        companyUser,
+        ['COMPANY_ADMIN', 'VIEWER'],
+        'tx' as never,
+        [USER_ID],
+      );
+      expect(userRoles.countUsersWithRole).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('listRoles', () => {
+    it('returns every role from the repository, sorted by name', async () => {
+      await expect(service.listRoles()).resolves.toEqual([
+        ROLES.COMPANY_ADMIN,
+        ROLES.PLATFORM_ADMIN,
+        ROLES.VIEWER,
+      ]);
+      expect(roles.findAllByName).toHaveBeenCalledOnce();
+    });
   });
 
   describe('assertRolesFitUser', () => {
@@ -107,12 +170,35 @@ describe('RolesService', () => {
     });
   });
 
+  describe('resolveNewUserRoles', () => {
+    it('gives VIEWER when no roles are requested', () => {
+      expect(service.resolveNewUserRoles(COMPANY_ID)).toEqual(['VIEWER']);
+    });
+
+    it('keeps the requested roles when they fit', () => {
+      expect(
+        service.resolveNewUserRoles(COMPANY_ID, ['COMPANY_ADMIN']),
+      ).toEqual(['COMPANY_ADMIN']);
+    });
+
+    it('rejects requested roles that do not fit the company', () => {
+      expect(() =>
+        service.resolveNewUserRoles(COMPANY_ID, ['PLATFORM_ADMIN']),
+      ).toThrow(BadRequestException);
+    });
+
+    it('rejects the VIEWER default for a user without a company', () => {
+      expect(() => service.resolveNewUserRoles(null)).toThrow(
+        BadRequestException,
+      );
+    });
+  });
+
   describe('replaceUserRoles', () => {
     it('adds new roles, soft-deletes removed ones, and leaves kept ones alone', async () => {
       const viewer = mapping('VIEWER');
       userRoles.findByUser.mockResolvedValue([viewer]);
 
-      // Before: VIEWER. After: COMPANY_ADMIN. VIEWER removed, COMPANY_ADMIN added.
       const result = await service.replaceUserRoles(companyUser, [
         'COMPANY_ADMIN',
       ]);
@@ -166,9 +252,7 @@ describe('RolesService', () => {
     });
 
     it('turns a unique-index violation (concurrent change) into ConflictException', async () => {
-      userRoles.save.mockRejectedValueOnce(
-        new QueryFailedError('INSERT ...', [], { code: '23505' } as never),
-      );
+      userRoles.save.mockRejectedValueOnce(new UniqueViolationError());
 
       await expect(
         service.replaceUserRoles(companyUser, ['VIEWER']),

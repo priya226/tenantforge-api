@@ -12,14 +12,17 @@ import {
   MinLength,
 } from 'class-validator';
 
-import { ROLE_NAMES, type RoleName } from '../../roles/role-name.js';
-import type { CreateUserInput } from '../users.service.js';
+import { ROLE_NAMES, type RoleName } from '../../../roles/role-name.js';
+import {
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_MIN_LENGTH,
+} from '../../../users/password-policy.js';
+import type { CreateUserRequest } from '../../feature-flag.facade.js';
 
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
 
-// Body of POST /users.
-export class CreateUserDto implements CreateUserInput {
+export class CreateUserDto implements CreateUserRequest {
   @IsUUID()
   companyId!: string;
 
@@ -35,14 +38,11 @@ export class CreateUserDto implements CreateUserInput {
   @MaxLength(254) // matches varchar(254) in V2
   email!: string;
 
-  // Length is what makes a password strong (NIST guidance), so there are no "must contain a symbol" rules.
-  // The maximum stops a huge "password" from making argon2 burn CPU. Not trimmed: spaces are allowed.
   @IsString()
-  @MinLength(12)
-  @MaxLength(128)
+  @MinLength(PASSWORD_MIN_LENGTH)
+  @MaxLength(PASSWORD_MAX_LENGTH)
   password!: string;
 
-  // Optional; the service defaults to ["VIEWER"]. Whether the roles fit the company is checked in RolesService.
   @IsOptional()
   @IsArray()
   @ArrayNotEmpty()

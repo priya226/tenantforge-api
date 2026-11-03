@@ -1,13 +1,22 @@
 # TenantForge API
 
-Backend API for **TenantForge**, a multi-tenant feature flag service. Product teams turn features on or off for each customer without redeploying, using percentage rollouts and attribute-based rules.
+Backend API for **TenantForge**, a multi-tenant feature-flag and config service. Product teams turn features on or off and change app config for each customer without redeploying, using percentage rollouts, attribute-based rules, versioned changes with rollback, and live updates.
+
+## Design docs
+
+- [High-level design](docs/hld.md): requirements, estimates, architecture, key decisions, flows, roadmap
+- [Low-level design](docs/lld.md): code layers, schema, optimistic locking, rollback, APIs, decisions log
 
 ## Tech stack
 
+In use now:
+
 - [NestJS](https://nestjs.com/) 12
 - TypeScript (strict mode, ES modules)
-- [PostgreSQL](https://www.postgresql.org/) 17, run locally with Docker Compose
+- [PostgreSQL](https://www.postgresql.org/) 17 with [Flyway](https://flywaydb.org/) migrations, run locally with Docker Compose
 - [Vitest](https://vitest.dev/) for tests, [oxlint](https://oxc.rs/) for linting
+
+Planned (see the [roadmap](docs/hld.md#11-roadmap)): Redis (cache + pub/sub), WebSockets (live delivery to SDKs), React and Angular micro-frontend console.
 
 ## Prerequisites
 
@@ -24,6 +33,7 @@ npm install
 cp .env.example .env
 docker compose up -d
 npm run db:migrate
+npm run seed:admin    # first platform admin, from BOOTSTRAP_ADMIN_* in .env
 npm run start:dev
 ```
 
@@ -42,8 +52,15 @@ The app reads its settings from a `.env` file in the project root, loaded by `@n
 | `DB_USER` | Postgres user | `postgres` |
 | `DB_PASSWORD` | Postgres password | must match `POSTGRES_PASSWORD` in `docker-compose.yml` |
 | `DB_NAME` | Database name | `tenantforge` |
+| `BOOTSTRAP_ADMIN_EMAIL` | Email of the first platform admin (used only by `seed:admin`) | `admin@tenantforge.local` |
+| `BOOTSTRAP_ADMIN_PASSWORD` | That admin's password, 12–128 characters (used only by `seed:admin`) | any local value; a real secret elsewhere |
+| `BOOTSTRAP_ADMIN_NAME` | Optional display name, default `Platform Admin` | `Platform Admin` |
 
-The app fails at startup if any of these variables is missing.
+The app fails at startup if any `DB_*` variable is missing. `seed:admin` fails if a required `BOOTSTRAP_ADMIN_*` variable is missing.
+
+### The first platform admin
+
+`npm run seed:admin` creates the first platform admin: a user with no company and the `PLATFORM_ADMIN` role. It does nothing if an active platform admin already exists, so it's safe to run again. It is a seed command, not a migration, for two reasons: the password must never be committed to git, and each environment sets its own admin.
 
 ## Database
 
@@ -71,7 +88,7 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 | `GET` | `/companies` | | `200` with all companies that are not deleted, newest first |
 | `GET` | `/companies/:id` | | `200` with the company, or `404` |
 | `PATCH` | `/companies/:id` | any of `name`, `description` | `200` with the updated company. Only the fields you send change. Send `"description": null` to clear it |
-| `DELETE` | `/companies/:id` | | `204`. Soft delete: sets `is_deleted = true` and keeps the row |
+| `DELETE` | `/companies/:id` | | `204`. Soft delete: sets `is_deleted = true` and keeps the row. **Cascades** in one transaction: all users of the company and their role mappings are soft-deleted too, so their emails become free to reuse |
 
 - `name` is required, trimmed, and at most 200 characters.
 - Unknown fields in the body are rejected with `400`, so a client can't set fields such as `isDeleted`.
@@ -91,11 +108,18 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 - `roles` on create is optional and defaults to `["VIEWER"]`. The user and its roles are saved in one transaction, so there is never a user without a role.
 - A user with a company can't be `PLATFORM_ADMIN`, and a user without a company can only be `PLATFORM_ADMIN`. Breaking either rule returns `400`.
 - An empty list or an unknown role name returns `400`. If two requests change the same user's roles at once, the loser gets `409`.
+- A company must keep at least one `COMPANY_ADMIN` (any number is allowed). Removing that role from the last admin returns `409` "Company must keep at least one admin".
 
 - Each user belongs to one company (`company_id`). The company must exist and not be deleted, otherwise the response is `404`. A `NULL` company is reserved for platform admins, who can't be created through this endpoint.
 - `email` is trimmed and lowercased before saving. It must be unique among users that are not deleted, so a duplicate returns `409`.
 - `password` must be 12–128 characters, with no rules about symbols or digits, and it is not trimmed. It is stored only as an argon2id hash in `password_hash`. That column is `select: false`, so normal queries never load it.
 - No authentication yet. Later, only company admins will be able to create users, and only in their own company.
+
+### Roles
+
+| Method | Path | Response |
+| --- | --- | --- |
+| `GET` | `/roles` | `200` with the roles that can be assigned: `[{ "name", "description" }]`, sorted by name |
 
 ## Database migrations
 
@@ -133,39 +157,51 @@ docker compose exec postgres psql -U postgres -d tenantforge
 | `npm run format` | Formats the code with Prettier |
 | `npm run db:migrate` | Applies pending database migrations with Flyway |
 | `npm run db:info` | Lists every migration and whether it has been applied |
+| `npm run seed:admin` | Builds the app, then creates the first platform admin from `.env` if none exists |
 
 ## Project structure
 
 ```
 src/
 ├─ main.ts          Entry point: creates the Nest app and starts the HTTP server
-├─ app.module.ts    Root module: every feature module gets imported here
+├─ app.module.ts    Root module: config, database, ApiModule
+├─ api/             HTTP layer: controllers + the one facade they all call
+│  ├─ api.module.ts          Imports the feature modules the facade uses
+│  ├─ feature-flag.facade.ts FeatureFlagFacade: the single entry point; calls the right service(s), no business rules
+│  ├─ companies/
+│  │  ├─ dto/                     Request bodies with validation rules
+│  │  └─ companies.controller.ts  HTTP routes
+│  ├─ users/
+│  │  ├─ dto/                 Bodies of POST /users and PUT /users/:id/roles
+│  │  └─ users.controller.ts  HTTP routes
+│  └─ roles/
+│     └─ roles.controller.ts  GET /roles
 ├─ common/
 │  ├─ base.entity.ts      Shared columns: id, created_at, updated_at, is_deleted
-│  └─ base.repository.ts  Wraps a TypeORM repository; hides soft-deleted rows by default
-├─ companies/
-│  ├─ dto/                  Request bodies with validation rules
-│  ├─ companies.controller.ts  HTTP routes
-│  ├─ companies.service.ts     Business logic (no database calls)
+│  ├─ base.repository.ts  Wraps a TypeORM repository; hides soft-deleted rows; turns Postgres unique violations into UniqueViolationError
+│  └─ unique-violation.error.ts  The error services catch for duplicates (instead of a Postgres code)
+├─ companies/              Feature module, no controller
+│  ├─ companies.service.ts     Company rules only (no database calls, no other features)
 │  ├─ company.repository.ts    All database calls for companies
 │  ├─ companies.module.ts
 │  └─ company.entity.ts   The company table
-├─ users/
-│  ├─ dto/                 Request body for creating a user
-│  ├─ users.controller.ts  HTTP routes
-│  ├─ users.service.ts     Create (company check, duplicate email, argon2 hash) and verifyCredentials for login
+├─ users/                  Feature module, no controller
+│  ├─ users.service.ts     Users only: create (duplicate email, argon2 hash), soft delete by company, verifyCredentials for login
 │  ├─ user.repository.ts   All database calls for users; findForLogin is the only query that loads the hash
 │  ├─ users.module.ts
 │  ├─ user.entity.ts       The app_user table ("user" is a reserved word in Postgres)
-│  └─ normalize-email.ts   Trim + lowercase, used wherever an email is stored or looked up
-├─ roles/                  No controller; used by UsersModule (roles never imports users)
+│  ├─ normalize-email.ts   Trim + lowercase, used wherever an email is stored or looked up
+│  └─ password-policy.ts   Password length rules (12–128), shared by the DTO and seed:admin
+├─ roles/                  Feature module, no controller (roles never imports users)
 │  ├─ role-name.ts           The 3 role names (must match the rows inserted by V3)
 │  ├─ role.entity.ts         The role table
 │  ├─ user-role.entity.ts    The user_role mapping table (a user can hold several roles)
-│  ├─ role.repository.ts     Look up roles by name
-│  ├─ user-role.repository.ts  A user's active role mappings
-│  ├─ roles.service.ts       Company rule, replace a user's set of roles
+│  ├─ role.repository.ts     List roles, look up roles by name
+│  ├─ user-role.repository.ts  A user's active role mappings; count users holding a role
+│  ├─ roles.service.ts       Company rule, last-admin rule, replace a user's set of roles
 │  └─ roles.module.ts
+├─ seed/
+│  └─ seed-admin.ts       npm run seed:admin: starts Nest without HTTP, calls FeatureFlagFacade.ensurePlatformAdmin
 └─ database/
    ├─ database.module.ts     TypeORM connection to Postgres, configured from .env
    └─ transaction-runner.ts  Runs a block of work in one DB transaction
@@ -173,12 +209,53 @@ db/
 └─ migration/             Flyway SQL migrations
 ```
 
-**Layers:** controller (HTTP) → service (business logic) → repository (database). Each feature has its own repository that extends `BaseRepository`. Every read adds `is_deleted = false` automatically. Pass `{ includeDeleted: true }` to also get deleted rows. Services never call TypeORM directly.
+**Layers:** controller (HTTP) → `FeatureFlagFacade`, one for the whole app (only calls services in order, owns cross-feature transactions, combines results; no business rules) → service (rules for one feature) → repository (database). Feature services never call each other; the facade does. Every controller calls the same facade. Each feature has its own repository that extends `BaseRepository`. Every read adds `is_deleted = false` automatically. Pass `{ includeDeleted: true }` to also get deleted rows. Services never call TypeORM directly.
 
-**Transactions:** when several writes must succeed or fail together, a service wraps them in `transactionRunner.run(async (tx) => { ... })` and calls `repository.withTransaction(tx)` for each repository involved. If the block throws, everything is rolled back.
+**Who does what:**
+
+| Layer | Does | Never |
+|---|---|---|
+| Controller | Routes, DTO validation, `ParseUUIDPipe`, response shape | Call services or repositories |
+| `FeatureFlagFacade` | Calls services in order, owns cross-feature transactions, combines results | Business rules, repositories, TypeORM |
+| Service | Business rules for one feature: defaults, validation, duplicates (409), 404s, hashing | Call another service, import TypeORM, build queries |
+| Repository | All DB access: query operators/options, `is_deleted` filter, Postgres error → `UniqueViolationError` | HTTP errors, business rules (e.g. email normalizing) |
+
+**Transactions:** when several writes must succeed or fail together, a facade (or a service, for writes inside one feature) wraps them in `transactionRunner.run(async (tx) => { ... })` and calls `repository.withTransaction(tx)` for each repository involved. If the block throws, everything is rolled back.
 
 The schema is changed only through Flyway migrations in `db/migration/`. TypeORM's `synchronize` is turned off.
 
+## Design rules
+
+**Modules**
+- Feature modules (`companies/`, `users/`, `roles/`) have no controllers and never import each other. They export only their service, never the repository.
+- `ApiModule` imports the feature modules, so dependencies only point downwards.
+- `roles/` uses a small `RoleHolder { id, companyId }` type instead of importing `User`, so it doesn't depend on `users/`.
+
+**Repositories**
+- `BaseRepository` wraps a TypeORM repository instead of extending it. TypeORM's own methods stay private, so nothing can skip the `is_deleted` filter by accident.
+- `withTransaction(tx)` returns a copy of the repository that runs its queries inside `tx`.
+- Services may use plain field filters (`findOneBy({ id })`), `create` and `save`. Anything with a TypeORM operator or option (`In`, `order`, `select`, relations) gets a named repository method.
+- A write that breaks a unique index throws `UniqueViolationError`. The service turns it into 409. This covers two requests racing past the duplicate check.
+
+**Validation**
+- The global `ValidationPipe` uses `whitelist`, `forbidNonWhitelisted` and `transform`. Unknown fields are rejected with 400, and bodies become DTO instances.
+- DTOs trim names and emails. Passwords are not trimmed.
+- Services check the same rules again (email format, password 12–128), because not every caller goes through HTTP (e.g. `seed:admin`).
+
+**Users and passwords**
+- Emails are lowercased and trimmed by `UsersService` before they are stored or looked up.
+- `password_hash` is `select: false`. `UserRepository.findForLogin` is the only query that loads it, and the hash is removed before a user leaves the service.
+- Login runs an argon2 verify even for unknown emails, so response time doesn't reveal which emails have accounts.
+
+**Roles**
+- A company can have any number of admins, but never zero. `PUT /users/:id/roles` runs in one transaction: lock the company row (`SELECT … FOR UPDATE`), load the company's user ids, then `RolesService.replaceUserRoles` returns 409 if the change would remove `COMPANY_ADMIN` from the last admin.
+- The lock makes role changes in the same company run one after another. Without it, two admins demoting each other at the same moment would both see "another admin exists" and both succeed. Other companies are not blocked.
+- Platform users are not locked: they can only hold `PLATFORM_ADMIN`, and a user must keep at least one role.
+
+**Deleting a company**
+- `FeatureFlagFacade.removeCompany` soft-deletes the company, its users and their role mappings in one transaction.
+- When a new feature owns company data (flags, API keys, settings), its cleanup step is added there.
+
 ## Project status
 
-Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. The companies API (CRUD with soft delete) and the users API (one company per user, argon2-hashed passwords) work end to end. Roles, authentication (JWT) and the feature flag modules come next.
+Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. Working end to end: the companies API (CRUD with soft delete), the users API (one company per user, argon2-hashed passwords), roles (a user can hold several; managed through `/users/:id/roles`; `GET /roles`; a company always keeps at least one admin), and `seed:admin` for the first platform admin. Next: the rest of the users API, then authentication (JWT) and tenant scoping, then flags and config with versioning, optimistic locking (409), audit and rollback. See the [roadmap](docs/hld.md#11-roadmap).

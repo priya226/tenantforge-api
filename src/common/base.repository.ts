@@ -1,13 +1,17 @@
-import type {
-  DeepPartial,
-  EntityManager,
-  FindManyOptions,
-  FindOneOptions,
-  FindOptionsWhere,
-  Repository,
+import {
+  type DeepPartial,
+  type EntityManager,
+  type FindManyOptions,
+  type FindOneOptions,
+  type FindOptionsWhere,
+  QueryFailedError,
+  type Repository,
 } from 'typeorm';
 
 import type { BaseEntity } from './base.entity.js';
+import { UniqueViolationError } from './unique-violation.error.js';
+
+const UNIQUE_VIOLATION = '23505';
 
 export interface ScopeOptions {
   // Set to true to also return soft-deleted rows. Off by default.
@@ -27,9 +31,6 @@ type Where<T> = FindOptionsWhere<T> | FindOptionsWhere<T>[];
 export abstract class BaseRepository<T extends BaseEntity> {
   protected constructor(protected readonly repo: Repository<T>) {}
 
-  // Returns a copy of this repository whose queries run inside `tx`.
-  // The copy keeps all methods (including the isDeleted filter and feature-specific ones),
-  // only the underlying TypeORM repository is swapped for the transaction's one.
   withTransaction(tx: EntityManager): this {
     const copy = Object.create(Object.getPrototypeOf(this) as object) as this;
     return Object.assign(copy, this, {
@@ -70,13 +71,36 @@ export abstract class BaseRepository<T extends BaseEntity> {
   }
 
   save(entity: T): Promise<T> {
-    return this.repo.save(entity);
+    return this.translateErrors(() => this.repo.save(entity));
   }
 
-  // Soft delete: keeps the row and marks it deleted.
   async softDelete(entity: T): Promise<void> {
     entity.isDeleted = true;
-    await this.repo.save(entity);
+    await this.save(entity);
+  }
+
+  // Soft-deletes every active row matching `where` in one UPDATE (no need to load them first).
+  // Used for cascades, e.g. "all users of company X". Returns how many rows were marked.
+  async softDeleteBy(where: FindOptionsWhere<T>): Promise<number> {
+    const result = await this.repo.update(
+      this.scopeWhere(where, {}) as FindOptionsWhere<T>,
+      { isDeleted: true } as unknown as Parameters<Repository<T>['update']>[1],
+    );
+    return result.affected ?? 0;
+  }
+
+  protected async translateErrors<R>(write: () => Promise<R>): Promise<R> {
+    try {
+      return await write();
+    } catch (error) {
+      if (
+        error instanceof QueryFailedError &&
+        (error.driverError as { code?: string }).code === UNIQUE_VIOLATION
+      ) {
+        throw new UniqueViolationError({ cause: error });
+      }
+      throw error;
+    }
   }
 
   // Adds isDeleted = false to the where clause. With an array (OR conditions),

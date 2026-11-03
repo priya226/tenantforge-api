@@ -23,7 +23,6 @@ import { TransactionRunner } from './transaction-runner.js';
       }),
     }),
   ],
-  // Feature modules import DatabaseModule to get TransactionRunner.
   providers: [TransactionRunner],
   exports: [TransactionRunner],
 })

@@ -6,14 +6,16 @@ import { BaseRepository } from '../common/base.repository.js';
 import type { RoleName } from './role-name.js';
 import { Role } from './role.entity.js';
 
-// All database access for the role lookup table. Soft-deleted roles are skipped (see BaseRepository).
 @Injectable()
 export class RoleRepository extends BaseRepository<Role> {
   constructor(@InjectRepository(Role) repo: Repository<Role>) {
     super(repo);
   }
 
-  // Turns role names into Role rows (to get their ids). Duplicates in `names` are fine.
+  findAllByName(): Promise<Role[]> {
+    return this.find({ order: { name: 'ASC' } });
+  }
+
   findByNames(names: readonly RoleName[]): Promise<Role[]> {
     return this.find({ where: { name: In([...new Set(names)]) } });
   }
