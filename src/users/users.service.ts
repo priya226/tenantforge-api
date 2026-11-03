@@ -35,6 +35,10 @@ export class UsersService {
     return user;
   }
 
+  findActive(id: string): Promise<User | null> {
+    return this.users.findOneBy({ id });
+  }
+
   async anyActive(ids: string[]): Promise<boolean> {
     if (ids.length === 0) {
       return false;

@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 
+import { type AuthTokens, AuthService } from '../auth/auth.service.js';
 import {
   type CreateCompanyInput,
   CompaniesService,
@@ -29,8 +30,40 @@ export class FeatureFlagFacade {
     private readonly companies: CompaniesService,
     private readonly users: UsersService,
     private readonly roles: RolesService,
+    private readonly auth: AuthService,
     private readonly transactions: TransactionRunner,
   ) {}
+
+  async login(email: string, password: string): Promise<AuthTokens> {
+    const user = await this.users.verifyCredentials(email, password);
+    if (!user) {
+      return this.auth.rejectLogin();
+    }
+    const roles = await this.roles.getUserRoles(user.id);
+    return this.auth.startSession({
+      userId: user.id,
+      companyId: user.companyId,
+      roles,
+    });
+  }
+
+  async refreshSession(refreshToken: string): Promise<AuthTokens> {
+    const session = await this.auth.findSession(refreshToken);
+    const user = await this.users.findActive(session.userId);
+    if (!user) {
+      return this.auth.endSession(session);
+    }
+    const roles = await this.roles.getUserRoles(user.id);
+    return this.auth.rotate(session, {
+      userId: user.id,
+      companyId: user.companyId,
+      roles,
+    });
+  }
+
+  logout(refreshToken: string): Promise<void> {
+    return this.auth.logout(refreshToken);
+  }
 
   findAllCompanies(): Promise<Company[]> {
     return this.companies.findAll();

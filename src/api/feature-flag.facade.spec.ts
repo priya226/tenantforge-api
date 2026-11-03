@@ -1,6 +1,11 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 
+import { AuthService } from '../auth/auth.service.js';
 import { CompaniesService } from '../companies/companies.service.js';
 import { TransactionRunner } from '../database/transaction-runner.js';
 import { RolesService } from '../roles/roles.service.js';
@@ -42,6 +47,8 @@ describe('FeatureFlagFacade', () => {
       Promise.resolve(makeUser(data.companyId)),
     ),
     anyActive: vi.fn(),
+    verifyCredentials: vi.fn(),
+    findActive: vi.fn(),
     findIdsInCompany: vi.fn(() => {
       calls.push('company-users');
       return Promise.resolve([USER_ID, 'u2']);
@@ -69,6 +76,18 @@ describe('FeatureFlagFacade', () => {
   const transactions = {
     run: vi.fn((work: (tx: unknown) => Promise<unknown>) => work('tx')),
   };
+  const tokens = { accessToken: 'jwt', expiresIn: 900, refreshToken: 'rt' };
+  const session = { id: 's1', userId: USER_ID, familyId: 'f1' };
+  const auth = {
+    rejectLogin: vi.fn(() => {
+      throw new UnauthorizedException();
+    }),
+    startSession: vi.fn(() => Promise.resolve(tokens)),
+    findSession: vi.fn(() => Promise.resolve(session)),
+    endSession: vi.fn(() => Promise.reject(new UnauthorizedException())),
+    rotate: vi.fn(() => Promise.resolve(tokens)),
+    logout: vi.fn(() => Promise.resolve()),
+  };
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -81,6 +100,7 @@ describe('FeatureFlagFacade', () => {
         { provide: CompaniesService, useValue: companies },
         { provide: UsersService, useValue: users },
         { provide: RolesService, useValue: roles },
+        { provide: AuthService, useValue: auth },
         { provide: TransactionRunner, useValue: transactions },
       ],
     }).compile();
@@ -242,6 +262,62 @@ describe('FeatureFlagFacade', () => {
         'tx',
         [],
       );
+    });
+  });
+
+  describe('auth', () => {
+    it('login returns 401 for wrong credentials without starting a session', async () => {
+      users.verifyCredentials.mockResolvedValue(null);
+
+      await expect(facade.login('priya@acme.com', 'wrong')).rejects.toThrow(
+        UnauthorizedException,
+      );
+      expect(roles.getUserRoles).not.toHaveBeenCalled();
+      expect(auth.startSession).not.toHaveBeenCalled();
+    });
+
+    it('login starts a session with the user id, company and roles', async () => {
+      users.verifyCredentials.mockResolvedValue(makeUser());
+      roles.getUserRoles.mockResolvedValue(['COMPANY_ADMIN']);
+
+      await expect(facade.login('priya@acme.com', 'pw')).resolves.toBe(tokens);
+      expect(auth.startSession).toHaveBeenCalledWith({
+        userId: USER_ID,
+        companyId: COMPANY_ID,
+        roles: ['COMPANY_ADMIN'],
+      });
+    });
+
+    it('refreshSession rotates with roles reloaded from the database', async () => {
+      users.findActive.mockResolvedValue(makeUser());
+      roles.getUserRoles.mockResolvedValue(['VIEWER']);
+
+      await expect(facade.refreshSession('rt')).resolves.toBe(tokens);
+      expect(auth.findSession).toHaveBeenCalledWith('rt');
+      expect(auth.rotate).toHaveBeenCalledWith(session, {
+        userId: USER_ID,
+        companyId: COMPANY_ID,
+        roles: ['VIEWER'],
+      });
+    });
+
+    it('refreshSession ends the session when the user was deleted', async () => {
+      users.findActive.mockResolvedValue(null);
+
+      await expect(facade.refreshSession('rt')).rejects.toThrow(
+        UnauthorizedException,
+      );
+      expect(auth.endSession).toHaveBeenCalledWith(session);
+      expect(auth.rotate).not.toHaveBeenCalled();
+    });
+
+    it('refreshSession stops when the token is rejected', async () => {
+      auth.findSession.mockRejectedValueOnce(new UnauthorizedException());
+
+      await expect(facade.refreshSession('bad')).rejects.toThrow(
+        UnauthorizedException,
+      );
+      expect(users.findActive).not.toHaveBeenCalled();
     });
   });
 });

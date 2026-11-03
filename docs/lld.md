@@ -46,6 +46,15 @@ role(name VARCHAR(50), description TEXT)                                   -- V3
 
 user_role(user_id → app_user, role_id → role)                              -- V3
     -- a user can hold several roles; UNIQUE (user_id, role_id) WHERE is_deleted = false
+
+refresh_token(user_id → app_user, family_id, token_hash CHAR(64),          -- V4
+              expires_at, family_expires_at, revoked_at NULL,
+              replaced_by_id NULL → refresh_token)
+    -- token_hash = SHA-256 hex of the raw token; the raw token is never stored
+    -- family_id groups every token rotated from one login
+    -- CHECK (expires_at <= family_expires_at)
+    -- UNIQUE (token_hash), not partial: revoked rows must stay findable to detect reuse
+    -- indexes on user_id and family_id
 ```
 
 ### Planned
@@ -95,8 +104,12 @@ WHERE id = $2 AND company_id = $3 AND version = $expectedVersion AND is_deleted 
 | `GET /users/{id}` | Company admin | User with roles | Built (auth pending) |
 | `GET/PUT /users/{id}/roles` | Company admin | Read / replace a user's roles | Built (auth pending) |
 | `GET /roles` | Any user | Roles that can be assigned | Built (auth pending) |
-| `GET /users`, `PATCH/DELETE /users/{id}` | Company admin | List (paged), rename, delete | Next |
-| `POST /auth/login` | User | Get a JWT | Planned |
+| `POST /auth/login` | Anyone | Email + password → access token + refresh token | Built |
+| `POST /auth/refresh` | Anyone with a refresh token | Rotate: new access token + new refresh token | Built |
+| `POST /auth/logout` | Anyone with a refresh token | Revoke the session (token family) | Built |
+| `GET /users/me` | Any user | Own record with roles | Next |
+| `GET /users?q=&companyId=&limit=&offset=` | Company admin (own company), platform admin (all) | Paged search, `{ items, total }` | After auth |
+| `PATCH/DELETE /users/{id}` | Company admin | Rename, delete | After auth |
 | `GET/POST /flags`, `PUT/DELETE /flags/{key}` | Admin (viewer: read) | Flags; `PUT` takes `expectedVersion` | Planned |
 | `POST /flags/{key}/rollback` | Admin | Roll back to a version | Planned |
 | `GET/PUT /settings/{key}` | Admin (viewer: read) | Config; `PUT` takes `expectedVersion` | Planned |
@@ -122,6 +135,38 @@ WHERE id = $2 AND company_id = $3 AND version = $expectedVersion AND is_deleted 
 - The first platform admin is created by `npm run seed:admin` from env vars. It is idempotent and not a migration, so no secret ever lands in git.
 - Passwords: argon2id, 12–128 characters, no composition rules. Login verifies against a dummy hash for unknown emails, so timing doesn't reveal which accounts exist.
 
+### Tokens
+
+| | Access token | Refresh token |
+| --- | --- | --- |
+| Format | JWT, HS256, signed with `JWT_SECRET` | 32 random bytes, base64url; not a JWT |
+| Contents | `sub` (user id), `companyId` (null for platform admin), `roles`, `iat`, `exp` | Nothing; a random key |
+| Lifetime | 15 minutes | 7 days idle, 30 days absolute |
+| Stored | Nowhere; checked by signature | Only its SHA-256 hash, in `refresh_token` |
+| Sent on | Every request: `Authorization: Bearer …` | Only `/auth/refresh` and `/auth/logout` (JSON body) |
+
+- No email or name in the JWT: anyone holding a token can read it, and the user id is enough.
+- `companyId` for tenant scoping is always read from the token, never from the request. Only a platform admin may filter by a `companyId` query parameter.
+- Login returns `{ accessToken, expiresIn, refreshToken }`. Login creates a new family: `family_expires_at = now + 30 days`, `expires_at = min(now + 7 days, family_expires_at)`.
+- `POST /auth/refresh`:
+  1. Hash the token and find the row. Not found → 401.
+  2. Already revoked → reuse: revoke every token in the family → 401.
+  3. Expired → 401.
+  4. User or their company deleted → 401.
+  5. One transaction: revoke the row, insert the next token (same family, `family_expires_at` copied, `expires_at = min(now + 7 days, family_expires_at)`, `replaced_by_id` set), and return a new access token with roles reloaded from the database.
+- Logout revokes the whole family.
+- `AuthService` handles tokens only. `FeatureFlagFacade` coordinates:
+  - login: `UsersService.verifyCredentials` → `RolesService.getUserRoles` → `AuthService.startSession`
+  - refresh: `AuthService.findSession` → `UsersService.findActive` (deleted user → session ended) → `RolesService.getUserRoles` → `AuthService.rotate`
+  - A deleted company soft-deletes its users, so the user check also covers a deleted company.
+- Rotation inserts the new token, then revokes the old one with `UPDATE … WHERE revoked_at IS NULL` in the same transaction. If another refresh already rotated it (0 rows), the transaction rolls back and the family is revoked.
+- Wrong email and wrong password both return the same 401 message.
+- A role change takes effect when the current access token expires (at most 15 minutes).
+- Every route needs a valid access token (a global guard). Login and refresh are marked public. `@Roles(...)` checks roles.
+- Client rules:
+  - Refresh only when a request needs it: the token has expired or is about to, or a request returned 401. Never on a timer, so an idle open tab still expires after 7 days.
+  - Run only one refresh at a time. Two parallel refreshes with the same token would look like reuse and end the session.
+
 ## 7. Decisions log
 
 | Decision | Rejected alternative and why |
@@ -138,6 +183,13 @@ WHERE id = $2 AND company_id = $3 AND version = $expectedVersion AND is_deleted 
 | Explicit transactions (`TransactionRunner` + `withTransaction`). | CLS-based hidden transactions: less visible. |
 | Deleting a company soft-deletes everything it owns, in one transaction. | Blocking the delete while users exist. |
 | One `FeatureFlagFacade` above feature services; it holds no business rules. | One facade per resource (more files for no gain); deletion hooks (flow hidden across modules); services calling each other (circular modules). |
+| Auth is built before list/rename/delete users, so those endpoints are token-scoped from the start. | Query-param scoping first, replaced later. |
+| JWT claims: `sub`, `companyId`, `roles`; no email or name. | Email as a claim: readable by anyone holding the token, goes stale. |
+| Short access token plus a rotating refresh token; roles in the JWT. | Roles loaded from the DB on every request (extra query each time); one long-lived token. |
+| Refresh token is an opaque random string; only its SHA-256 is stored, in Postgres. | Refresh token as a JWT (can't be revoked without a table anyway); argon2 for it (salted, so no indexed lookup; not needed for 256-bit random values); Redis storage (a flush logs everyone out). |
+| Rotation with reuse detection: a revoked token used again revokes the whole family. | No rotation: a stolen token works until it expires. |
+| Expiry: 7 days idle (sliding) and 30 days absolute, as `expires_at = min(now + 7d, family_expires_at)`. | Sliding only (an active session never ends); absolute only (active users logged out every 7 days). A separate session table (only needed for an active-sessions screen). |
+| Tenant scope comes from the token; VIEWER sees only `/users/me`, COMPANY_ADMIN lists own company, PLATFORM_ADMIN lists all. | `companyId` from the request for everyone. |
 | Repositories own all query details and translate DB errors (`UniqueViolationError`). | Services building TypeORM queries and checking Postgres codes. |
 | Last company admin protected (409); company row locked `FOR UPDATE` during role changes. | Count check only (two demotions at once leave zero admins); SERIALIZABLE isolation with retries (more moving parts). |
 | Optimistic locking with `version` + `expectedVersion`. | Pessimistic locks held during an edit. |

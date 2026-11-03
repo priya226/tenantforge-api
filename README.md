@@ -55,6 +55,10 @@ The app reads its settings from a `.env` file in the project root, loaded by `@n
 | `BOOTSTRAP_ADMIN_EMAIL` | Email of the first platform admin (used only by `seed:admin`) | `admin@tenantforge.local` |
 | `BOOTSTRAP_ADMIN_PASSWORD` | That admin's password, 12–128 characters (used only by `seed:admin`) | any local value; a real secret elsewhere |
 | `BOOTSTRAP_ADMIN_NAME` | Optional display name, default `Platform Admin` | `Platform Admin` |
+| `JWT_SECRET` | Signs access tokens (HS256). Long and random; never commit it | generate: `node -e "console.log(require('crypto').randomBytes(64).toString('base64url'))"` |
+| `JWT_ACCESS_TTL_SECONDS` | Access token lifetime | `900` (15 min) |
+| `REFRESH_IDLE_DAYS` | A session ends after this many days without a refresh | `7` |
+| `REFRESH_ABSOLUTE_DAYS` | A session ends this many days after login, however active | `30` |
 
 The app fails at startup if any `DB_*` variable is missing. `seed:admin` fails if a required `BOOTSTRAP_ADMIN_*` variable is missing.
 
@@ -79,6 +83,20 @@ These are local development credentials only.
 Data is stored in the `pgdata` Docker volume, so it survives `docker compose down`. To wipe the database and start fresh, run `docker compose down -v`.
 
 ## API
+
+### Auth
+
+| Method | Path | Body | Response |
+| --- | --- | --- | --- |
+| `POST` | `/auth/login` | `{ "email", "password" }` | `200` with `{ "accessToken", "expiresIn", "refreshToken" }`, or `401` "Invalid email or password" |
+| `POST` | `/auth/refresh` | `{ "refreshToken" }` | `200` with a new `{ accessToken, expiresIn, refreshToken }`. The old refresh token stops working. `401` if it is unknown, expired, revoked or the user was deleted |
+| `POST` | `/auth/logout` | `{ "refreshToken" }` | `204`. Ends that login session (other devices stay logged in). Unknown tokens also get `204` |
+
+- `accessToken` is a JWT valid for `expiresIn` seconds (900). Send it as `Authorization: Bearer <accessToken>`. It holds the user id (`sub`), `companyId` and `roles`.
+- `refreshToken` is a random string, not a JWT. The server stores only its SHA-256 hash.
+- Each refresh returns a **new** refresh token. Using an old one again is treated as theft and ends the whole session.
+- A session ends after 7 days without a refresh, or 30 days after login.
+- Wrong email and wrong password get the same `401`, so the API doesn't reveal which emails exist.
 
 ### Companies
 
@@ -129,7 +147,8 @@ The schema is managed by [Flyway](https://documentation.red-gate.com/flyway), ru
 db/migration/
 ├─ V1__create_company.sql
 ├─ V2__create_app_user.sql
-└─ V3__create_role_and_user_role.sql   (also inserts the 3 roles)
+├─ V3__create_role_and_user_role.sql   (also inserts the 3 roles)
+└─ V4__create_refresh_token.sql        (login sessions; stores only token hashes)
 ```
 
 - Name files `V<version>__<description>.sql`, with two underscores. Flyway runs them in version order and records each one in the `flyway_schema_history` table, so each file runs only once.
@@ -200,6 +219,11 @@ src/
 │  ├─ user-role.repository.ts  A user's active role mappings; count users holding a role
 │  ├─ roles.service.ts       Company rule, last-admin rule, replace a user's set of roles
 │  └─ roles.module.ts
+├─ auth/                   Feature module, no controller (tokens only; knows nothing about users or roles)
+│  ├─ auth.service.ts              Sign access tokens; start, check, rotate and end refresh-token sessions
+│  ├─ refresh-token.entity.ts      The refresh_token table (stores only token hashes)
+│  ├─ refresh-token.repository.ts  Find by hash, rotate one token, revoke a whole family
+│  └─ auth.module.ts               JWT settings (HS256, JWT_SECRET)
 ├─ seed/
 │  └─ seed-admin.ts       npm run seed:admin: starts Nest without HTTP, calls FeatureFlagFacade.ensurePlatformAdmin
 └─ database/

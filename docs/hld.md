@@ -124,9 +124,18 @@ Management and delivery start as two modules in one NestJS app; splitting them i
 | Redis pub/sub between instances | The instance holding an SDK's socket may not be the one that saved the change | Sticky routing |
 | Redis internal only | No per-company auth, browsers can't speak it, not built for internet-scale clients | SDKs subscribing to Redis directly |
 | API key per company for SDKs | A company id is not secret; a key can be revoked and rotated | Trusting a client-sent company id |
+| Console auth: 15-minute JWT access token + rotating refresh token (hash stored in Postgres) | No DB lookup per request, yet sessions can be revoked; 7-day idle and 30-day absolute expiry; reuse of an old refresh token ends the session | One long-lived JWT (can't be revoked); a DB session lookup on every request |
+| Tenant scope read from the token | A user can't reach another company's data by changing a request parameter | Trusting a client-sent company id |
 | Server SDK gets all rules; browser clients get only their own results | Rules must not leak to end-user devices | Shipping all rules to browsers |
 
 ## 9. Flows
+
+### 9.0 Console login and token refresh
+1. `POST /auth/login` with email and password → `{ accessToken (15 min), refreshToken }`.
+2. Every request sends `Authorization: Bearer <accessToken>`. The server checks only the signature and reads user id, company and roles from it.
+3. When a request needs a fresh token, the console calls `POST /auth/refresh`. The old refresh token is revoked and a new pair is returned, with roles reloaded from the database.
+4. If a revoked refresh token is used again, the whole session is revoked (theft detection).
+5. Unused for 7 days, or 30 days after login, the refresh fails and the user logs in again.
 
 ### 9.1 SDK startup
 1. The app creates the SDK with its API key.
@@ -177,7 +186,7 @@ Each app is built and deployed separately; the shell loads them at runtime (Modu
 
 | Milestone | Scope | Status |
 | --- | --- | --- |
-| 1 | NestJS + Postgres: companies, users, roles, auth (JWT), tenant scoping, flags, rules, config, versioning, audit, rollback, 409 | In progress: companies, users, roles, seed admin done |
+| 1 | NestJS + Postgres: companies, users, roles, auth (JWT), tenant scoping, flags, rules, config, versioning, audit, rollback, 409 | In progress: companies, users, roles, seed admin done; auth in progress |
 | 2 | Redis cache + pub/sub, WebSocket delivery, SDK package, demo app reacting live | Planned |
 | 3 | Console: React shell, React flags app, Angular settings app | Planned |
 | 4 | Docker images, GitHub Actions CI, demo deploy | Planned |
