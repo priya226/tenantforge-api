@@ -23,6 +23,13 @@ const newUser = {
   password: 'correct horse battery',
 };
 
+const admin = {
+  userId: 'admin-1',
+  companyId: COMPANY_ID,
+  roles: ['COMPANY_ADMIN' as const],
+};
+const SCOPE = { kind: 'company', companyId: COMPANY_ID };
+
 const makeUser = (companyId: string | null = COMPANY_ID) =>
   Object.assign(new User(), { id: USER_ID, companyId, name: 'Priya' });
 
@@ -87,6 +94,7 @@ describe('FeatureFlagFacade', () => {
     endSession: vi.fn(() => Promise.reject(new UnauthorizedException())),
     rotate: vi.fn(() => Promise.resolve(tokens)),
     logout: vi.fn(() => Promise.resolve()),
+    tenantScope: vi.fn(() => SCOPE),
   };
 
   beforeEach(async () => {
@@ -133,7 +141,7 @@ describe('FeatureFlagFacade', () => {
 
   describe('createUser', () => {
     it('resolves roles, then saves user and roles in one transaction', async () => {
-      const created = await facade.createUser(newUser);
+      const created = await facade.createUser(admin, newUser);
 
       expect(roles.resolveNewUserRoles).toHaveBeenCalledWith(
         COMPANY_ID,
@@ -150,7 +158,7 @@ describe('FeatureFlagFacade', () => {
     });
 
     it('passes the requested roles to RolesService', async () => {
-      const created = await facade.createUser({
+      const created = await facade.createUser(admin, {
         ...newUser,
         roles: ['COMPANY_ADMIN', 'VIEWER'],
       });
@@ -165,7 +173,7 @@ describe('FeatureFlagFacade', () => {
     it('stops at an unknown company before touching roles or users', async () => {
       companies.findOne.mockRejectedValue(new NotFoundException());
 
-      await expect(facade.createUser(newUser)).rejects.toBeInstanceOf(
+      await expect(facade.createUser(admin, newUser)).rejects.toBeInstanceOf(
         NotFoundException,
       );
       expect(roles.resolveNewUserRoles).not.toHaveBeenCalled();
@@ -177,7 +185,7 @@ describe('FeatureFlagFacade', () => {
         throw new BadRequestException();
       });
 
-      await expect(facade.createUser(newUser)).rejects.toBeInstanceOf(
+      await expect(facade.createUser(admin, newUser)).rejects.toBeInstanceOf(
         BadRequestException,
       );
       expect(transactions.run).not.toHaveBeenCalled();
@@ -185,7 +193,7 @@ describe('FeatureFlagFacade', () => {
   });
 
   describe('ensurePlatformAdmin (seed:admin)', () => {
-    const admin = {
+    const newAdmin = {
       name: 'Platform Admin',
       email: 'admin@tenantforge.local',
       password: 'correct horse battery',
@@ -195,7 +203,7 @@ describe('FeatureFlagFacade', () => {
       roles.getUserIdsWithRole.mockResolvedValue([USER_ID]);
       users.anyActive.mockResolvedValue(false);
 
-      expect(await facade.ensurePlatformAdmin(admin)).toBe('created');
+      expect(await facade.ensurePlatformAdmin(newAdmin)).toBe('created');
       expect(users.anyActive).toHaveBeenCalledWith([USER_ID]);
       expect(roles.resolveNewUserRoles).toHaveBeenCalledWith(null, [
         'PLATFORM_ADMIN',
@@ -211,7 +219,7 @@ describe('FeatureFlagFacade', () => {
       roles.getUserIdsWithRole.mockResolvedValue([USER_ID]);
       users.anyActive.mockResolvedValue(true);
 
-      expect(await facade.ensurePlatformAdmin(admin)).toBe('already-exists');
+      expect(await facade.ensurePlatformAdmin(newAdmin)).toBe('already-exists');
       expect(users.create).not.toHaveBeenCalled();
     });
   });
@@ -221,7 +229,7 @@ describe('FeatureFlagFacade', () => {
       users.findOne.mockRejectedValue(new NotFoundException());
 
       await expect(
-        facade.setUserRoles(USER_ID, ['VIEWER']),
+        facade.setUserRoles(admin, USER_ID, ['VIEWER']),
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(roles.replaceUserRoles).not.toHaveBeenCalled();
     });
@@ -236,9 +244,9 @@ describe('FeatureFlagFacade', () => {
         },
       );
 
-      expect(await facade.setUserRoles(USER_ID, ['COMPANY_ADMIN'])).toEqual([
-        'COMPANY_ADMIN',
-      ]);
+      expect(
+        await facade.setUserRoles(admin, USER_ID, ['COMPANY_ADMIN']),
+      ).toEqual(['COMPANY_ADMIN']);
       expect(calls).toEqual(['lock', 'company-users', 'roles']);
       expect(companies.lockForUpdate).toHaveBeenCalledWith(COMPANY_ID, 'tx');
       expect(roles.replaceUserRoles).toHaveBeenCalledWith(
@@ -253,7 +261,7 @@ describe('FeatureFlagFacade', () => {
       const user = makeUser(null);
       users.findOne.mockResolvedValue(user);
 
-      await facade.setUserRoles(USER_ID, ['PLATFORM_ADMIN']);
+      await facade.setUserRoles(admin, USER_ID, ['PLATFORM_ADMIN']);
 
       expect(companies.lockForUpdate).not.toHaveBeenCalled();
       expect(roles.replaceUserRoles).toHaveBeenCalledWith(
@@ -262,6 +270,38 @@ describe('FeatureFlagFacade', () => {
         'tx',
         [],
       );
+    });
+  });
+
+  describe('tenant scope', () => {
+    it('createUser checks the company inside the caller scope', async () => {
+      await facade.createUser(admin, newUser);
+
+      expect(auth.tenantScope).toHaveBeenCalledWith(admin);
+      expect(companies.findOne).toHaveBeenCalledWith(COMPANY_ID, SCOPE);
+    });
+
+    it('findUser, getUserRoles and setUserRoles look the user up inside the caller scope', async () => {
+      users.findOne.mockResolvedValue(makeUser());
+      roles.getUserRoles.mockResolvedValue(['VIEWER']);
+
+      await facade.findUser(admin, USER_ID);
+      await facade.getUserRoles(admin, USER_ID);
+      await facade.setUserRoles(admin, USER_ID, ['VIEWER']);
+
+      expect(users.findOne).toHaveBeenCalledTimes(3);
+      for (const call of users.findOne.mock.calls) {
+        expect(call).toEqual([USER_ID, SCOPE]);
+      }
+    });
+
+    it('a user outside the scope is a 404 and nothing else runs', async () => {
+      users.findOne.mockRejectedValue(new NotFoundException());
+
+      await expect(facade.findUser(admin, USER_ID)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(roles.getUserRoles).not.toHaveBeenCalled();
     });
   });
 

@@ -9,6 +9,10 @@ import {
 } from '@nestjs/common';
 
 import type { RoleName } from '../../roles/role-name.js';
+import {
+  CurrentUser,
+  type CurrentUserInfo,
+} from '../auth/current-user.decorator.js';
 import { Roles } from '../auth/roles.decorator.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
 import { UpdateUserRolesDto } from './dto/update-user-roles.dto.js';
@@ -23,27 +27,35 @@ export class UsersController {
   constructor(private readonly facade: FeatureFlagFacade) {}
 
   @Post()
-  create(@Body() dto: CreateUserDto): Promise<UserWithRoles> {
-    return this.facade.createUser(dto);
+  create(
+    @CurrentUser() me: CurrentUserInfo,
+    @Body() dto: CreateUserDto,
+  ): Promise<UserWithRoles> {
+    return this.facade.createUser(me, dto);
   }
 
   @Get(':id')
-  findOne(@Param('id', ParseUUIDPipe) id: string): Promise<UserWithRoles> {
-    return this.facade.findUser(id);
+  findOne(
+    @CurrentUser() me: CurrentUserInfo,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<UserWithRoles> {
+    return this.facade.findUser(me, id);
   }
 
   @Get(':id/roles')
   async getRoles(
+    @CurrentUser() me: CurrentUserInfo,
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<{ roles: RoleName[] }> {
-    return { roles: await this.facade.getUserRoles(id) };
+    return { roles: await this.facade.getUserRoles(me, id) };
   }
 
   @Put(':id/roles')
   async setRoles(
+    @CurrentUser() me: CurrentUserInfo,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateUserRolesDto,
   ): Promise<{ roles: RoleName[] }> {
-    return { roles: await this.facade.setUserRoles(id, dto.roles) };
+    return { roles: await this.facade.setUserRoles(me, id, dto.roles) };
   }
 }

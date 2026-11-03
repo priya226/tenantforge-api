@@ -54,8 +54,25 @@ describe('CompaniesService', () => {
   it('findOne throws NotFoundException when the repository finds nothing', async () => {
     repo.findOneBy.mockResolvedValue(null);
 
-    await expect(service.findOne(ID)).rejects.toBeInstanceOf(NotFoundException);
+    await expect(service.findOne(ID, { kind: 'all' })).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
     expect(repo.findOneBy).toHaveBeenCalledWith({ id: ID });
+  });
+
+  it('findOne returns the caller own company', async () => {
+    repo.findOneBy.mockResolvedValue({ id: ID });
+
+    await expect(
+      service.findOne(ID, { kind: 'company', companyId: ID }),
+    ).resolves.toEqual({ id: ID });
+  });
+
+  it('findOne is a 404 for another company, without querying', async () => {
+    await expect(
+      service.findOne(ID, { kind: 'company', companyId: 'other-company' }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(repo.findOneBy).not.toHaveBeenCalled();
   });
 
   it('create stores a missing description as null', async () => {

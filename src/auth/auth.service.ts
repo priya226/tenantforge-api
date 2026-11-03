@@ -1,9 +1,14 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 
+import { ALL_COMPANIES, type TenantScope } from '../common/tenant-scope.js';
 import { TransactionRunner } from '../database/transaction-runner.js';
 import type { RoleName } from '../roles/role-name.js';
 import { RefreshToken } from './refresh-token.entity.js';
@@ -55,6 +60,16 @@ export class AuthService {
       Number(config.getOrThrow<string>('REFRESH_IDLE_DAYS')) * DAY_MS;
     this.absoluteMs =
       Number(config.getOrThrow<string>('REFRESH_ABSOLUTE_DAYS')) * DAY_MS;
+  }
+
+  tenantScope(actor: TokenSubject): TenantScope {
+    if (actor.companyId) {
+      return { kind: 'company', companyId: actor.companyId };
+    }
+    if (actor.roles.includes('PLATFORM_ADMIN')) {
+      return ALL_COMPANIES;
+    }
+    throw new ForbiddenException('You do not have permission to do this');
   }
 
   rejectLogin(): never {

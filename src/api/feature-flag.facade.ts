@@ -1,6 +1,11 @@
 import { Injectable } from '@nestjs/common';
 
-import { type AuthTokens, AuthService } from '../auth/auth.service.js';
+import {
+  type AuthTokens,
+  AuthService,
+  type TokenSubject,
+} from '../auth/auth.service.js';
+import { ALL_COMPANIES } from '../common/tenant-scope.js';
 import {
   type CreateCompanyInput,
   CompaniesService,
@@ -70,7 +75,7 @@ export class FeatureFlagFacade {
   }
 
   findCompany(id: string): Promise<Company> {
-    return this.companies.findOne(id);
+    return this.companies.findOne(id, ALL_COMPANIES);
   }
 
   createCompany(input: CreateCompanyInput): Promise<Company> {
@@ -89,8 +94,12 @@ export class FeatureFlagFacade {
     });
   }
 
-  async createUser(input: CreateUserRequest): Promise<UserWithRoles> {
-    await this.companies.findOne(input.companyId);
+  async createUser(
+    actor: TokenSubject,
+    input: CreateUserRequest,
+  ): Promise<UserWithRoles> {
+    const scope = this.auth.tenantScope(actor);
+    await this.companies.findOne(input.companyId, scope);
     const roleNames = this.roles.resolveNewUserRoles(
       input.companyId,
       input.roles,
@@ -116,18 +125,22 @@ export class FeatureFlagFacade {
     return this.roles.listRoles();
   }
 
-  async findUser(id: string): Promise<UserWithRoles> {
-    const user = await this.users.findOne(id);
+  async findUser(actor: TokenSubject, id: string): Promise<UserWithRoles> {
+    const user = await this.users.findOne(id, this.auth.tenantScope(actor));
     return Object.assign(user, { roles: await this.roles.getUserRoles(id) });
   }
 
-  async getUserRoles(id: string): Promise<RoleName[]> {
-    await this.users.findOne(id);
+  async getUserRoles(actor: TokenSubject, id: string): Promise<RoleName[]> {
+    await this.users.findOne(id, this.auth.tenantScope(actor));
     return this.roles.getUserRoles(id);
   }
 
-  async setUserRoles(id: string, roles: RoleName[]): Promise<RoleName[]> {
-    const user = await this.users.findOne(id);
+  async setUserRoles(
+    actor: TokenSubject,
+    id: string,
+    roles: RoleName[],
+  ): Promise<RoleName[]> {
+    const user = await this.users.findOne(id, this.auth.tenantScope(actor));
     return this.transactions.run(async (tx) => {
       let companyUserIds: string[] = [];
       if (user.companyId) {

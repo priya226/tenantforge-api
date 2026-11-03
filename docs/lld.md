@@ -163,7 +163,7 @@ WHERE id = $2 AND company_id = $3 AND version = $expectedVersion AND is_deleted 
 - Wrong email and wrong password both return the same 401 message.
 - A role change takes effect when the current access token expires (at most 15 minutes).
 - Every route needs a valid access token: `JwtAuthGuard` (passport-jwt, HS256 only) is a global guard; `@Public()` opts out (`/auth/*`, `GET /`). `RolesGuard` is global too: `@Roles(...)` on a controller or method requires one of those roles (403 otherwise); method-level overrides class-level; no `@Roles` = any logged-in user. `@CurrentUser()` gives `{ userId, companyId, roles }`.
-- Company admins are not yet limited to their own company's users (next step: tenant scoping).
+- **Tenant scope:** `AuthService.tenantScope(caller)` → `{ kind: 'company', companyId }` (company user) or `{ kind: 'all' }` (platform admin; a token with no company and no PLATFORM_ADMIN role → 403). The facade passes it to services, which add `company_id` to the lookup. Out-of-scope rows → 404 (existence is not revealed). `POST /users` checks the body's `companyId` the same way.
 - Client rules:
   - Refresh only when a request needs it: the token has expired or is about to, or a request returned 401. Never on a timer, so an idle open tab still expires after 7 days.
   - Run only one refresh at a time. Two parallel refreshes with the same token would look like reuse and end the session.

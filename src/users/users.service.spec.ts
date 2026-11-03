@@ -70,9 +70,22 @@ describe('UsersService', () => {
     it('throws NotFoundException when the user does not exist', async () => {
       repo.findOneBy.mockResolvedValue(null);
 
-      await expect(service.findOne(USER_ID)).rejects.toBeInstanceOf(
-        NotFoundException,
-      );
+      await expect(
+        service.findOne(USER_ID, { kind: 'all' }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(repo.findOneBy).toHaveBeenCalledWith({ id: USER_ID });
+    });
+
+    it('adds the caller company to the lookup for a company scope', async () => {
+      repo.findOneBy.mockResolvedValue(null);
+
+      await expect(
+        service.findOne(USER_ID, { kind: 'company', companyId: 'c-1' }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(repo.findOneBy).toHaveBeenCalledWith({
+        id: USER_ID,
+        companyId: 'c-1',
+      });
     });
   });
 

@@ -1,5 +1,10 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 
+import {
+  ALL_COMPANIES,
+  inScope,
+  type TenantScope,
+} from '../common/tenant-scope.js';
 import type { Transaction } from '../database/transaction-runner.js';
 import { Company } from './company.entity.js';
 import { CompanyRepository } from './company.repository.js';
@@ -22,8 +27,10 @@ export class CompaniesService {
     return this.companies.findAllNewestFirst();
   }
 
-  async findOne(id: string): Promise<Company> {
-    const company = await this.companies.findOneBy({ id });
+  async findOne(id: string, scope: TenantScope): Promise<Company> {
+    const company = inScope(scope, id)
+      ? await this.companies.findOneBy({ id })
+      : null;
     if (!company) {
       throw new NotFoundException(`Company ${id} not found`);
     }
@@ -39,7 +46,7 @@ export class CompaniesService {
   }
 
   async update(id: string, input: UpdateCompanyInput): Promise<Company> {
-    const company = await this.findOne(id);
+    const company = await this.findOne(id, ALL_COMPANIES);
     if (input.name !== undefined) {
       company.name = input.name;
     }

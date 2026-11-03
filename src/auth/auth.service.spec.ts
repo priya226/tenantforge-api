@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-import { UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 
@@ -237,6 +237,35 @@ describe('AuthService', () => {
     it('does nothing for an unknown token', async () => {
       await expect(service.logout('nope')).resolves.toBeUndefined();
       expect(tokens.revokeFamily).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('tenantScope', () => {
+    it('limits a company user to their own company', () => {
+      expect(service.tenantScope(subject)).toEqual({
+        kind: 'company',
+        companyId: subject.companyId,
+      });
+    });
+
+    it('gives a platform admin every company', () => {
+      expect(
+        service.tenantScope({
+          userId: 'p1',
+          companyId: null,
+          roles: ['PLATFORM_ADMIN'],
+        }),
+      ).toEqual({ kind: 'all' });
+    });
+
+    it('refuses a token with no company and no PLATFORM_ADMIN role', () => {
+      expect(() =>
+        service.tenantScope({
+          userId: 'x',
+          companyId: null,
+          roles: ['VIEWER'],
+        }),
+      ).toThrow(ForbiddenException);
     });
   });
 
