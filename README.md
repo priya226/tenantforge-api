@@ -55,6 +55,10 @@ The app reads its settings from a `.env` file in the project root, loaded by `@n
 | `BOOTSTRAP_ADMIN_EMAIL` | Email of the first platform admin (used only by `seed:admin`) | `admin@tenantforge.local` |
 | `BOOTSTRAP_ADMIN_PASSWORD` | That admin's password, 12–128 characters (used only by `seed:admin`) | any local value; a real secret elsewhere |
 | `BOOTSTRAP_ADMIN_NAME` | Optional display name, default `Platform Admin` | `Platform Admin` |
+| `JWT_SECRET` | Signs access tokens (HS256). Long and random; never commit it | generate: `node -e "console.log(require('crypto').randomBytes(64).toString('base64url'))"` |
+| `JWT_ACCESS_TTL_SECONDS` | Access token lifetime | `900` (15 min) |
+| `REFRESH_IDLE_DAYS` | A session ends after this many days without a refresh | `7` |
+| `REFRESH_ABSOLUTE_DAYS` | A session ends this many days after login, however active | `30` |
 
 The app fails at startup if any `DB_*` variable is missing. `seed:admin` fails if a required `BOOTSTRAP_ADMIN_*` variable is missing.
 
@@ -80,6 +84,20 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 
 ## API
 
+### Auth
+
+| Method | Path | Body | Response |
+| --- | --- | --- | --- |
+| `POST` | `/auth/login` | `{ "email", "password" }` | `200` with `{ "accessToken", "expiresIn", "refreshToken" }`, or `401` "Invalid email or password" |
+| `POST` | `/auth/refresh` | `{ "refreshToken" }` | `200` with a new `{ accessToken, expiresIn, refreshToken }`. The old refresh token stops working. `401` if it is unknown, expired, revoked or the user was deleted |
+| `POST` | `/auth/logout` | `{ "refreshToken" }` | `204`. Ends that login session (other devices stay logged in). Unknown tokens also get `204` |
+
+- `accessToken` is a JWT valid for `expiresIn` seconds (900). Send it as `Authorization: Bearer <accessToken>`. It holds the user id (`sub`), `companyId` and `roles`.
+- `refreshToken` is a random string, not a JWT. The server stores only its SHA-256 hash.
+- Each refresh returns a **new** refresh token. Using an old one again is treated as theft and ends the whole session.
+- A session ends after 7 days without a refresh, or 30 days after login.
+- Wrong email and wrong password get the same `401`, so the API doesn't reveal which emails exist.
+
 ### Companies
 
 | Method | Path | Body | Response |
@@ -93,13 +111,14 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 - `name` is required, trimmed, and at most 200 characters.
 - Unknown fields in the body are rejected with `400`, so a client can't set fields such as `isDeleted`.
 - A malformed `:id` (not a UUID) returns `400` before any database query runs.
-- These endpoints have no authentication yet. Later, only platform admins will be able to use them.
+- Requires a `PLATFORM_ADMIN` token. Others get `403`; no token gets `401`.
 
 ### Users
 
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |
 | `POST` | `/users` | `{ "companyId": uuid, "name": string, "email": string, "password": string, "roles"?: string[] }` | `201` with the created user and its `roles` (never includes the password hash) |
+| `GET` | `/users/me` | | `200` with the caller's own user and `roles`. **Any logged-in user**, including `VIEWER`. `404` if the account was deleted after login |
 | `GET` | `/users/:id` | | `200` with the user and its `roles`, or `404` |
 | `GET` | `/users/:id/roles` | | `200` `{ "roles": [...] }`, or `404` |
 | `PUT` | `/users/:id/roles` | `{ "roles": string[] }` | `200` `{ "roles": [...] }`. **Replaces** the whole set: removed roles are soft-deleted, new ones added |
@@ -113,7 +132,8 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 - Each user belongs to one company (`company_id`). The company must exist and not be deleted, otherwise the response is `404`. A `NULL` company is reserved for platform admins, who can't be created through this endpoint.
 - `email` is trimmed and lowercased before saving. It must be unique among users that are not deleted, so a duplicate returns `409`.
 - `password` must be 12–128 characters, with no rules about symbols or digits, and it is not trimmed. It is stored only as an argon2id hash in `password_hash`. That column is `select: false`, so normal queries never load it.
-- No authentication yet. Later, only company admins will be able to create users, and only in their own company.
+- Requires a `COMPANY_ADMIN` or `PLATFORM_ADMIN` token (`403` otherwise), except `GET /users/me`.
+- A company admin works only inside their own company: another company's user (or company id in `POST /users`) returns `404`, as if it didn't exist. A platform admin works in every company.
 
 ### Roles
 
@@ -129,7 +149,8 @@ The schema is managed by [Flyway](https://documentation.red-gate.com/flyway), ru
 db/migration/
 ├─ V1__create_company.sql
 ├─ V2__create_app_user.sql
-└─ V3__create_role_and_user_role.sql   (also inserts the 3 roles)
+├─ V3__create_role_and_user_role.sql   (also inserts the 3 roles)
+└─ V4__create_refresh_token.sql        (login sessions; stores only token hashes)
 ```
 
 - Name files `V<version>__<description>.sql`, with two underscores. Flyway runs them in version order and records each one in the `flyway_schema_history` table, so each file runs only once.
@@ -152,22 +173,46 @@ docker compose exec postgres psql -U postgres -d tenantforge
 | `npm run start:prod` | Runs the compiled app from `dist/` |
 | `npm test` | Runs the unit tests once |
 | `npm run test:watch` | Re-runs the unit tests whenever a file changes |
-| `npm run test:e2e` | Runs the end-to-end tests |
+| `npm run test:e2e` | Runs the end-to-end tests against the `tenantforge_test` database (run `db:test:setup` first) |
 | `npm run lint` | Checks the code with oxlint |
 | `npm run format` | Formats the code with Prettier |
 | `npm run db:migrate` | Applies pending database migrations with Flyway |
 | `npm run db:info` | Lists every migration and whether it has been applied |
+| `npm run db:test:setup` | Creates the `tenantforge_test` database if missing and migrates it with Flyway. Safe to re-run; run it after adding a migration |
 | `npm run seed:admin` | Builds the app, then creates the first platform admin from `.env` if none exists |
+
+## Testing
+
+- **Unit tests** (`npm test`): `*.spec.ts` next to the code, with fakes instead of a database.
+- **End-to-end tests** (`npm run test:e2e`): `test/*.e2e-spec.ts`. They start the real app (same setup as `main.ts`, via `configureApp`) and call it over HTTP with Supertest, against a real Postgres database.
+  - They use a separate database, `tenantforge_test`, in the same Docker Postgres, so your dev data is never touched. Its schema comes from the same Flyway migrations.
+  - Before each test the tables are emptied and a platform admin is seeded. The reset refuses to run on any database whose name doesn't end in `_test`.
+  - Test files run one at a time, because they share the database.
+
+```bash
+docker compose up -d       # Postgres must be running
+npm run db:test:setup      # once, and after every new migration
+npm run test:e2e
+```
 
 ## Project structure
 
 ```
 src/
 ├─ main.ts          Entry point: creates the Nest app and starts the HTTP server
+├─ app.setup.ts     configureApp(): global ValidationPipe; shared by main.ts and the e2e tests
 ├─ app.module.ts    Root module: config, database, ApiModule
 ├─ api/             HTTP layer: controllers + the one facade they all call
 │  ├─ api.module.ts          Imports the feature modules the facade uses
 │  ├─ feature-flag.facade.ts FeatureFlagFacade: the single entry point; calls the right service(s), no business rules
+│  ├─ auth/
+│  │  ├─ dto/                       Bodies of login, refresh and logout
+│  │  ├─ auth.controller.ts         POST /auth/login, /auth/refresh, /auth/logout (public)
+│  │  ├─ jwt-auth.guard.ts          Global guard: every route needs a valid access token unless @Public()
+│  │  ├─ roles.guard.ts             Global guard: 403 unless the token holds one of the route's @Roles
+│  │  ├─ public.decorator.ts        @Public()
+│  │  ├─ roles.decorator.ts         @Roles(...)
+│  │  └─ current-user.decorator.ts  @CurrentUser(): { userId, companyId, roles } from the token
 │  ├─ companies/
 │  │  ├─ dto/                     Request bodies with validation rules
 │  │  └─ companies.controller.ts  HTTP routes
@@ -200,13 +245,24 @@ src/
 │  ├─ user-role.repository.ts  A user's active role mappings; count users holding a role
 │  ├─ roles.service.ts       Company rule, last-admin rule, replace a user's set of roles
 │  └─ roles.module.ts
+├─ auth/                   Feature module, no controller (tokens only; knows nothing about users or roles)
+│  ├─ auth.service.ts              Sign access tokens; start, check, rotate and end refresh-token sessions
+│  ├─ jwt.strategy.ts              Checks the Bearer token's HS256 signature and expiry; puts the claims on the request
+│  ├─ refresh-token.entity.ts      The refresh_token table (stores only token hashes)
+│  ├─ refresh-token.repository.ts  Find by hash, rotate one token, revoke a whole family
+│  └─ auth.module.ts               JWT settings (HS256, JWT_SECRET)
 ├─ seed/
 │  └─ seed-admin.ts       npm run seed:admin: starts Nest without HTTP, calls FeatureFlagFacade.ensurePlatformAdmin
 └─ database/
    ├─ database.module.ts     TypeORM connection to Postgres, configured from .env
    └─ transaction-runner.ts  Runs a block of work in one DB transaction
 db/
-└─ migration/             Flyway SQL migrations
+├─ migration/             Flyway SQL migrations
+└─ test/create-test-db.sql  Creates tenantforge_test if it doesn't exist
+test/
+├─ e2e-app.ts             Starts the app for e2e tests, resets the test database, logs in
+├─ auth.e2e-spec.ts       Login, 401/403, tenant scope (404), /users/me, refresh rotation, reuse, logout
+└─ app.e2e-spec.ts        GET / is public
 ```
 
 **Layers:** controller (HTTP) → `FeatureFlagFacade`, one for the whole app (only calls services in order, owns cross-feature transactions, combines results; no business rules) → service (rules for one feature) → repository (database). Feature services never call each other; the facade does. Every controller calls the same facade. Each feature has its own repository that extends `BaseRepository`. Every read adds `is_deleted = false` automatically. Pass `{ includeDeleted: true }` to also get deleted rows. Services never call TypeORM directly.
@@ -252,10 +308,29 @@ The schema is changed only through Flyway migrations in `db/migration/`. TypeORM
 - The lock makes role changes in the same company run one after another. Without it, two admins demoting each other at the same moment would both see "another admin exists" and both succeed. Other companies are not blocked.
 - Platform users are not locked: they can only hold `PLATFORM_ADMIN`, and a user must keep at least one role.
 
+**Authentication and access**
+- Every route needs a valid access token by default (`JwtAuthGuard` is global). Only `@Public()` routes skip it: `/auth/*` and `GET /`.
+- `RolesGuard` (also global) runs after it. A route or controller with `@Roles(...)` needs at least one of those roles; a method-level `@Roles` overrides the controller's. Without `@Roles`, any logged-in user may call it.
+- Only HS256 tokens signed with `JWT_SECRET` are accepted; `alg: none` and other algorithms are rejected.
+- Roles are read from the token, so a role change applies within one access-token lifetime (15 minutes).
+
+| Routes | Roles |
+| --- | --- |
+| `/auth/*`, `GET /` | public |
+| `/companies` | `PLATFORM_ADMIN` |
+| `/users` | `COMPANY_ADMIN`, `PLATFORM_ADMIN` |
+| `GET /users/me` | any logged-in user (method-level `@Roles` with every role) |
+| `/roles` | any logged-in user |
+
+**Tenant scope**
+- The caller's company always comes from the token. `AuthService.tenantScope(caller)` turns it into a `TenantScope`: `{ kind: 'company', companyId }` for a company user, `{ kind: 'all' }` for a platform admin.
+- The facade passes that scope to the services, and the services put it into the query (`WHERE id = ? AND company_id = ?`). A row in another company is simply not found, so the answer is `404`, not `403`: the API doesn't reveal that it exists.
+- Every new company-owned feature (flags, settings, audit) takes a `TenantScope` the same way.
+
 **Deleting a company**
 - `FeatureFlagFacade.removeCompany` soft-deletes the company, its users and their role mappings in one transaction.
 - When a new feature owns company data (flags, API keys, settings), its cleanup step is added there.
 
 ## Project status
 
-Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. Working end to end: the companies API (CRUD with soft delete), the users API (one company per user, argon2-hashed passwords), roles (a user can hold several; managed through `/users/:id/roles`; `GET /roles`; a company always keeps at least one admin), and `seed:admin` for the first platform admin. Next: the rest of the users API, then authentication (JWT) and tenant scoping, then flags and config with versioning, optimistic locking (409), audit and rollback. See the [roadmap](docs/hld.md#11-roadmap).
+Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. Working end to end: the companies API (CRUD with soft delete), the users API (one company per user, argon2-hashed passwords), roles (a user can hold several; managed through `/users/:id/roles`; `GET /roles`; a company always keeps at least one admin), and `seed:admin` for the first platform admin. Authentication: login, refresh (rotating refresh tokens with reuse detection) and logout, with a global JWT guard and role checks on every route. Tenant scoping: company admins only see and change users of their own company. `GET /users/me` for every logged-in user. Next: the rest of the users API, then flags and config with versioning, optimistic locking (409), audit and rollback. See the [roadmap](docs/hld.md#11-roadmap).

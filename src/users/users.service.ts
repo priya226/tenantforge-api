@@ -7,6 +7,7 @@ import {
 import * as argon2 from 'argon2';
 import { isEmail } from 'class-validator';
 
+import type { TenantScope } from '../common/tenant-scope.js';
 import { UniqueViolationError } from '../common/unique-violation.error.js';
 import type { Transaction } from '../database/transaction-runner.js';
 import { normalizeEmail } from './normalize-email.js';
@@ -27,12 +28,18 @@ export class UsersService {
 
   constructor(private readonly users: UserRepository) {}
 
-  async findOne(id: string): Promise<User> {
-    const user = await this.users.findOneBy({ id });
+  async findOne(id: string, scope: TenantScope): Promise<User> {
+    const user = await this.users.findOneBy(
+      scope.kind === 'all' ? { id } : { id, companyId: scope.companyId },
+    );
     if (!user) {
       throw new NotFoundException(`User ${id} not found`);
     }
     return user;
+  }
+
+  findActive(id: string): Promise<User | null> {
+    return this.users.findOneBy({ id });
   }
 
   async anyActive(ids: string[]): Promise<boolean> {
