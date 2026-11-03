@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 
+import { AuditService } from '../audit/audit.service.js';
 import {
   type AuthTokens,
   AuthService,
@@ -13,6 +14,12 @@ import {
 } from '../companies/companies.service.js';
 import { Company } from '../companies/company.entity.js';
 import { TransactionRunner } from '../database/transaction-runner.js';
+import { FeatureFlag } from '../flags/feature-flag.entity.js';
+import {
+  type CreateFlagInput,
+  type FlagState,
+  FlagsService,
+} from '../flags/flags.service.js';
 import type { RoleName } from '../roles/role-name.js';
 import { Role } from '../roles/role.entity.js';
 import { RolesService } from '../roles/roles.service.js';
@@ -42,6 +49,8 @@ export class FeatureFlagFacade {
     private readonly users: UsersService,
     private readonly roles: RolesService,
     private readonly auth: AuthService,
+    private readonly flags: FlagsService,
+    private readonly audit: AuditService,
     private readonly transactions: TransactionRunner,
   ) {}
 
@@ -97,6 +106,7 @@ export class FeatureFlagFacade {
       await this.companies.remove(id, tx);
       const userIds = await this.users.softDeleteByCompany(id, tx);
       await this.roles.removeAllRolesForUsers(userIds, tx);
+      await this.flags.softDeleteByCompany(id, tx);
     });
   }
 
@@ -201,6 +211,107 @@ export class FeatureFlagFacade {
         companyUserIds = await this.users.findIdsInCompany(user.companyId, tx);
       }
       return this.roles.replaceUserRoles(user, roles, tx, companyUserIds);
+    });
+  }
+
+  /** Flags of the caller's company (or ?companyId for a platform admin), sorted by key. */
+  listFlags(actor: TokenSubject, companyId?: string): Promise<FeatureFlag[]> {
+    const target = this.flags.resolveCompany(
+      this.auth.tenantScope(actor),
+      companyId,
+    );
+    return this.flags.list(target);
+  }
+
+  /** One flag by key in the caller's company (or ?companyId for a platform admin). */
+  findFlag(
+    actor: TokenSubject,
+    key: string,
+    companyId?: string,
+  ): Promise<FeatureFlag> {
+    const target = this.flags.resolveCompany(
+      this.auth.tenantScope(actor),
+      companyId,
+    );
+    return this.flags.findByKey(target, key);
+  }
+
+  /** Creates a flag in the caller's company and its CREATE audit row, in one transaction. */
+  createFlag(
+    actor: TokenSubject,
+    input: CreateFlagInput,
+  ): Promise<FeatureFlag> {
+    const companyId = this.flags.resolveCompany(this.auth.tenantScope(actor));
+    return this.transactions.run(async (tx) => {
+      const flag = await this.flags.create(companyId, input, tx);
+      await this.audit.record(
+        {
+          companyId,
+          userId: actor.userId,
+          entityType: 'FLAG',
+          entityId: flag.id,
+          version: flag.version,
+          action: 'CREATE',
+          before: null,
+          after: this.flags.snapshot(flag),
+        },
+        tx,
+      );
+      return flag;
+    });
+  }
+
+  /** Replaces a flag's state if expectedVersion still matches (409 otherwise) and audits it. */
+  async updateFlag(
+    actor: TokenSubject,
+    key: string,
+    expectedVersion: number,
+    input: FlagState,
+  ): Promise<FeatureFlag> {
+    const companyId = this.flags.resolveCompany(this.auth.tenantScope(actor));
+    const flag = await this.flags.findByKey(companyId, key);
+    return this.transactions.run(async (tx) => {
+      const updated = await this.flags.update(flag, expectedVersion, input, tx);
+      await this.audit.record(
+        {
+          companyId,
+          userId: actor.userId,
+          entityType: 'FLAG',
+          entityId: flag.id,
+          version: updated.version,
+          action: 'UPDATE',
+          before: this.flags.snapshot(flag),
+          after: this.flags.snapshot(updated),
+        },
+        tx,
+      );
+      return updated;
+    });
+  }
+
+  /** Soft-deletes a flag if expectedVersion still matches (409 otherwise) and audits it. */
+  async removeFlag(
+    actor: TokenSubject,
+    key: string,
+    expectedVersion: number,
+  ): Promise<void> {
+    const companyId = this.flags.resolveCompany(this.auth.tenantScope(actor));
+    const flag = await this.flags.findByKey(companyId, key);
+    await this.transactions.run(async (tx) => {
+      const version = await this.flags.remove(flag, expectedVersion, tx);
+      await this.audit.record(
+        {
+          companyId,
+          userId: actor.userId,
+          entityType: 'FLAG',
+          entityId: flag.id,
+          version,
+          action: 'DELETE',
+          before: this.flags.snapshot(flag),
+          after: null,
+        },
+        tx,
+      );
     });
   }
 

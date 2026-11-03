@@ -6,9 +6,12 @@ import {
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 
+import { AuditService } from '../audit/audit.service.js';
 import { AuthService } from '../auth/auth.service.js';
 import { CompaniesService } from '../companies/companies.service.js';
 import { TransactionRunner } from '../database/transaction-runner.js';
+import { FeatureFlag } from '../flags/feature-flag.entity.js';
+import { FlagsService } from '../flags/flags.service.js';
 import { RolesService } from '../roles/roles.service.js';
 import { User } from '../users/user.entity.js';
 import { UsersService } from '../users/users.service.js';
@@ -93,6 +96,41 @@ describe('FeatureFlagFacade', () => {
       return Promise.resolve();
     }),
   };
+  const makeFlag = (version = 1) =>
+    Object.assign(new FeatureFlag(), {
+      id: 'flag-1',
+      companyId: COMPANY_ID,
+      key: 'new-checkout',
+      version,
+    });
+  const flags = {
+    resolveCompany: vi.fn(() => COMPANY_ID),
+    list: vi.fn(),
+    findByKey: vi.fn(() => Promise.resolve(makeFlag(1))),
+    create: vi.fn(() => {
+      calls.push('create-flag');
+      return Promise.resolve(makeFlag(1));
+    }),
+    update: vi.fn(() => {
+      calls.push('update-flag');
+      return Promise.resolve(makeFlag(2));
+    }),
+    remove: vi.fn(() => {
+      calls.push('remove-flag');
+      return Promise.resolve(2);
+    }),
+    softDeleteByCompany: vi.fn(() => {
+      calls.push('flags');
+      return Promise.resolve();
+    }),
+    snapshot: vi.fn((f: FeatureFlag) => ({ key: f.key, version: f.version })),
+  };
+  const audit = {
+    record: vi.fn(() => {
+      calls.push('audit');
+      return Promise.resolve();
+    }),
+  };
   const transactions = {
     run: vi.fn((work: (tx: unknown) => Promise<unknown>) => work('tx')),
   };
@@ -126,6 +164,8 @@ describe('FeatureFlagFacade', () => {
         { provide: UsersService, useValue: users },
         { provide: RolesService, useValue: roles },
         { provide: AuthService, useValue: auth },
+        { provide: FlagsService, useValue: flags },
+        { provide: AuditService, useValue: audit },
         { provide: TransactionRunner, useValue: transactions },
       ],
     }).compile();
@@ -133,11 +173,12 @@ describe('FeatureFlagFacade', () => {
   });
 
   describe('removeCompany', () => {
-    it('deletes the company, then its users, then their roles, in one transaction', async () => {
+    it('deletes the company, its users, their roles and its flags, in one transaction', async () => {
       await facade.removeCompany(COMPANY_ID);
 
       expect(transactions.run).toHaveBeenCalledOnce();
-      expect(calls).toEqual(['company', 'users', 'roles']);
+      expect(calls).toEqual(['company', 'users', 'roles', 'flags']);
+      expect(flags.softDeleteByCompany).toHaveBeenCalledWith(COMPANY_ID, 'tx');
       expect(companies.remove).toHaveBeenCalledWith(COMPANY_ID, 'tx');
       expect(users.softDeleteByCompany).toHaveBeenCalledWith(COMPANY_ID, 'tx');
       expect(roles.removeAllRolesForUsers).toHaveBeenCalledWith(
@@ -475,6 +516,105 @@ describe('FeatureFlagFacade', () => {
         UnauthorizedException,
       );
       expect(users.findActive).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('flags', () => {
+    const state = {
+      description: null,
+      enabled: true,
+      rolloutType: 'PERCENT' as const,
+      rolloutValue: 50,
+      rules: [],
+    };
+
+    it('lists flags of the company resolved from the scope', async () => {
+      flags.list.mockResolvedValue([]);
+
+      await facade.listFlags(admin, undefined);
+
+      expect(flags.resolveCompany).toHaveBeenCalledWith(SCOPE, undefined);
+      expect(flags.list).toHaveBeenCalledWith(COMPANY_ID);
+    });
+
+    it('creates a flag and its CREATE audit row in one transaction', async () => {
+      await facade.createFlag(admin, { key: 'new-checkout' });
+
+      expect(transactions.run).toHaveBeenCalledOnce();
+      expect(calls).toEqual(['create-flag', 'audit']);
+      expect(flags.create).toHaveBeenCalledWith(
+        COMPANY_ID,
+        { key: 'new-checkout' },
+        'tx',
+      );
+      expect(audit.record).toHaveBeenCalledWith(
+        {
+          companyId: COMPANY_ID,
+          userId: admin.userId,
+          entityType: 'FLAG',
+          entityId: 'flag-1',
+          version: 1,
+          action: 'CREATE',
+          before: null,
+          after: { key: 'new-checkout', version: 1 },
+        },
+        'tx',
+      );
+    });
+
+    it('updates a flag and audits before/after at the new version', async () => {
+      const updated = await facade.updateFlag(admin, 'new-checkout', 1, state);
+
+      expect(updated.version).toBe(2);
+      expect(calls).toEqual(['update-flag', 'audit']);
+      expect(flags.update).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'flag-1' }),
+        1,
+        state,
+        'tx',
+      );
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'UPDATE',
+          version: 2,
+          before: { key: 'new-checkout', version: 1 },
+          after: { key: 'new-checkout', version: 2 },
+        }),
+        'tx',
+      );
+    });
+
+    it('writes no audit row when the version check fails', async () => {
+      flags.update.mockRejectedValueOnce(new ConflictException());
+
+      await expect(
+        facade.updateFlag(admin, 'new-checkout', 1, state),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(audit.record).not.toHaveBeenCalled();
+    });
+
+    it('deletes a flag and audits DELETE with only a before snapshot', async () => {
+      await facade.removeFlag(admin, 'new-checkout', 1);
+
+      expect(calls).toEqual(['remove-flag', 'audit']);
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'DELETE',
+          version: 2,
+          before: { key: 'new-checkout', version: 1 },
+          after: null,
+        }),
+        'tx',
+      );
+    });
+
+    it('stops at 404 before opening a transaction when the flag is missing', async () => {
+      flags.findByKey.mockRejectedValueOnce(new NotFoundException());
+
+      await expect(
+        facade.removeFlag(admin, 'missing', 1),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(transactions.run).not.toHaveBeenCalled();
     });
   });
 });

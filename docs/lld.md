@@ -55,6 +55,21 @@ refresh_token(user_id → app_user, family_id, token_hash CHAR(64),          -- 
     -- CHECK (expires_at <= family_expires_at)
     -- UNIQUE (token_hash), not partial: revoked rows must stay findable to detect reuse
     -- indexes on user_id and family_id
+
+feature_flag(company_id → company, key VARCHAR(64), description, enabled,   -- V5
+             rollout_type ('PERCENT' | 'COUNT'), rollout_value INT,
+             rules JSONB array, version INT ≥ 1)
+    -- CHECK: PERCENT value 0–100, COUNT value 1–10000; COUNT flags have no rules
+    -- CHECK: at most 50 rules, each {attribute: text, value: text, percent: whole number 0–100}
+    -- UNIQUE (company_id, key) WHERE is_deleted = false
+    -- key CHECK ^[a-z][a-z0-9-]{1,63}$; rules e.g. [{"attribute":"region","value":"IN","percent":20}]
+
+audit_event(company_id → company, user_id → app_user,                     -- V5
+            entity_type ('FLAG' | 'SETTING'), entity_id, version INT,
+            action ('CREATE' | 'UPDATE' | 'DELETE' | 'ROLLBACK'),
+            before_json JSONB, after_json JSONB)
+    -- UNIQUE (entity_type, entity_id, version); INDEX (company_id, created_at DESC)
+    -- CHECK: CREATE has only after, DELETE has only before, UPDATE/ROLLBACK have both
 ```
 
 ### Planned
@@ -62,17 +77,8 @@ refresh_token(user_id → app_user, family_id, token_hash CHAR(64),          -- 
 ```
 api_key(company_id → company, key_hash, revoked_at NULL)
 
-feature_flag(company_id → company, key, description, enabled, default_percent, version INT)
-    -- UNIQUE (company_id, key) WHERE is_deleted = false
-
-feature_flag_rule(flag_id → feature_flag, attribute, value, percent)
-
 company_setting(company_id → company, key, value_json JSONB, version INT)
     -- UNIQUE (company_id, key) WHERE is_deleted = false
-
-audit_event(company_id, user_id, entity_type ('FLAG' | 'SETTING'), entity_id,
-            version INT, action, before_json JSONB, after_json JSONB)
-    -- append-only; full snapshots; history + rollback for flags and settings
 ```
 
 Every flag, setting and audit query filters by `company_id`, enforced in one place so a new endpoint can't forget it.
@@ -99,7 +105,7 @@ WHERE id = $2 AND company_id = $3 AND version = $expectedVersion AND is_deleted 
 
 | Method and path | Who | Purpose | Status |
 | --- | --- | --- | --- |
-| `POST/GET/PATCH/DELETE /companies[/{id}]` | Platform admin | Company CRUD; delete cascades to users and roles | Built |
+| `POST/GET/PATCH/DELETE /companies[/{id}]` | Platform admin | Company CRUD; delete cascades to users, roles and flags | Built |
 | `POST /users` | Company admin, platform admin | Create a user (optional `roles[]`, default VIEWER) | Built |
 | `GET /users/{id}` | Company admin, platform admin | User with roles | Built |
 | `GET/PUT /users/{id}/roles` | Company admin, platform admin | Read / replace a user's roles | Built |
@@ -111,7 +117,10 @@ WHERE id = $2 AND company_id = $3 AND version = $expectedVersion AND is_deleted 
 | `GET /users?q=&companyId=&limit=&offset=` | Company admin (own company), platform admin (all) | Paged search, `{ items, total }`; roles per item (one `IN` query); `q` ILIKE on email/name; newest first; foreign `companyId` → 404 | Built |
 | `PATCH /users/{id}` | Company admin (own company), platform admin | Rename (`{ name }` only; other fields 400) | Built |
 | `DELETE /users/{id}` | Company admin (own company), platform admin | Soft delete + roles + revoke sessions in one transaction (company row locked); last COMPANY_ADMIN / PLATFORM_ADMIN 409; self 400 | Built |
-| `GET/POST /flags`, `PUT/DELETE /flags/{key}` | Admin (viewer: read) | Flags; `PUT` takes `expectedVersion` | Planned |
+| `POST /flags` | Company admin | Create (version 1, CREATE audit row); duplicate key 409 | Built |
+| `GET /flags[/{key}]?companyId=` | Any user of the company; platform admin with `companyId` (required) | List sorted by key / one flag; foreign company 404 | Built |
+| `PUT /flags/{key}` | Company admin | Replace full state with `expectedVersion`; stale 409; UPDATE audit row | Built |
+| `DELETE /flags/{key}?expectedVersion=` | Company admin | Soft delete; stale 409; DELETE audit row; key reusable | Built |
 | `POST /flags/{key}/rollback` | Admin | Roll back to a version | Planned |
 | `GET/PUT /settings/{key}` | Admin (viewer: read) | Config; `PUT` takes `expectedVersion` | Planned |
 | `POST /settings/{key}/rollback` | Admin | Roll back to a version | Planned |
@@ -201,3 +210,9 @@ WHERE id = $2 AND company_id = $3 AND version = $expectedVersion AND is_deleted 
 | `PATCH /users/{id}` changes name only until email verification exists. | Email change without verification. |
 | Flyway owns the schema; never edit an applied migration. | TypeORM `synchronize` / generated migrations. |
 | Soft delete on every table; timestamps in UTC. | Hard deletes; local times. |
+| `PUT /flags/{key}` sends the full state plus `expectedVersion`; the key is immutable and used in URLs. | `PATCH` partial updates (merging is harder to audit and roll back); id in the URL with a renamable key (breaks SDK callers). |
+| Flag writes are company-admin only; a platform admin can read any company's flags but not change them. | Platform admin edits (support access without an audit trail of who in the company changed what). |
+| `DELETE /flags/{key}` also requires `expectedVersion`. | Deleting whatever version is current (could delete a change the admin never saw). |
+| A company delete soft-deletes its flags without audit rows. | One DELETE audit row per flag (history of a deleted company is not used). |
+| Two rollout modes: `PERCENT` (hash of user id, evaluated in the SDK) and `COUNT` (first N users; the server hands out places). Rules only with `PERCENT`. | Explicit user-id lists only (admin must pick people); approximating N users as a tiny percent (not exact). |
+| Rules are a JSONB array on the flag, with a database CHECK (JSON path) on each rule's shape. A table is used only for things with their own identity or that are counted/locked on their own (`user_role`, COUNT places). | A `feature_flag_rule` table: rules are only ever read and written with their flag, so a table adds joins, diffs on save and row rebuilds on rollback. |
