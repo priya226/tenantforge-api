@@ -38,6 +38,18 @@ export class RolesService {
     return mappings.map((m) => m.role!.name).sort();
   }
 
+  /** Roles of many users in one query, as userId → sorted role names ([] if none). */
+  async getRolesForUsers(userIds: string[]): Promise<Map<string, RoleName[]>> {
+    const byUser = new Map<string, RoleName[]>(userIds.map((id) => [id, []]));
+    for (const mapping of await this.userRoles.findByUsers(userIds)) {
+      byUser.get(mapping.userId)?.push(mapping.role!.name);
+    }
+    for (const names of byUser.values()) {
+      names.sort();
+    }
+    return byUser;
+  }
+
   async removeAllRolesForUsers(
     userIds: string[],
     tx: Transaction,

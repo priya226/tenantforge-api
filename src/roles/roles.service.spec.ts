@@ -54,6 +54,7 @@ describe('RolesService', () => {
   };
   const userRoles = {
     findByUser: vi.fn(),
+    findByUsers: vi.fn(),
     create: vi.fn((data: Partial<UserRole>) =>
       Object.assign(new UserRole(), data),
     ),
@@ -127,6 +128,24 @@ describe('RolesService', () => {
         [USER_ID],
       );
       expect(userRoles.countUsersWithRole).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getRolesForUsers', () => {
+    it('groups roles per user in one query, sorted, with [] for users without roles', async () => {
+      userRoles.findByUsers.mockResolvedValue([
+        Object.assign(mapping('VIEWER'), { userId: 'u1' }),
+        Object.assign(mapping('COMPANY_ADMIN'), { userId: 'u1' }),
+        Object.assign(mapping('VIEWER'), { userId: 'u2' }),
+      ]);
+
+      const result = await service.getRolesForUsers(['u1', 'u2', 'u3']);
+
+      expect(userRoles.findByUsers).toHaveBeenCalledOnce();
+      expect(userRoles.findByUsers).toHaveBeenCalledWith(['u1', 'u2', 'u3']);
+      expect(result.get('u1')).toEqual(['COMPANY_ADMIN', 'VIEWER']);
+      expect(result.get('u2')).toEqual(['VIEWER']);
+      expect(result.get('u3')).toEqual([]);
     });
   });
 

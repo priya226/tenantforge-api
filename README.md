@@ -118,8 +118,10 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |
 | `POST` | `/users` | `{ "companyId": uuid, "name": string, "email": string, "password": string, "roles"?: string[] }` | `201` with the created user and its `roles` (never includes the password hash) |
+| `GET` | `/users?q=&companyId=&limit=&offset=` | | `200` `{ "items": [user with `roles`], "total": n }`. Newest first. See the notes below |
 | `GET` | `/users/me` | | `200` with the caller's own user and `roles`. **Any logged-in user**, including `VIEWER`. `404` if the account was deleted after login |
 | `GET` | `/users/:id` | | `200` with the user and its `roles`, or `404` |
+| `PATCH` | `/users/:id` | `{ "name": string }` | `200` with the updated user and `roles`. Only the name can change; any other field (e.g. `email`) gets `400`. `404` for a user outside your company |
 | `GET` | `/users/:id/roles` | | `200` `{ "roles": [...] }`, or `404` |
 | `PUT` | `/users/:id/roles` | `{ "roles": string[] }` | `200` `{ "roles": [...] }`. **Replaces** the whole set: removed roles are soft-deleted, new ones added |
 
@@ -133,6 +135,12 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 - `email` is trimmed and lowercased before saving. It must be unique among users that are not deleted, so a duplicate returns `409`.
 - `password` must be 12–128 characters, with no rules about symbols or digits, and it is not trimmed. It is stored only as an argon2id hash in `password_hash`. That column is `select: false`, so normal queries never load it.
 - Requires a `COMPANY_ADMIN` or `PLATFORM_ADMIN` token (`403` otherwise), except `GET /users/me`.
+- `GET /users` lists users page by page:
+  - A company admin always sees only their own company. A platform admin sees everyone, or one company with `?companyId=`. A company admin passing another company's id gets `404`.
+  - `q` matches anywhere in the email or the name, ignoring case. `%` and `_` are matched literally.
+  - `limit` 1–100 (default 20), `offset` ≥ 0 (default 0). `total` is the number of matches across all pages.
+  - Sorted newest first, ties broken by id, so pages never repeat or skip a user.
+  - Each user's `roles` are loaded for the whole page in one query.
 - A company admin works only inside their own company: another company's user (or company id in `POST /users`) returns `404`, as if it didn't exist. A platform admin works in every company.
 
 ### Roles
@@ -217,7 +225,7 @@ src/
 │  │  ├─ dto/                     Request bodies with validation rules
 │  │  └─ companies.controller.ts  HTTP routes
 │  ├─ users/
-│  │  ├─ dto/                 Bodies of POST /users and PUT /users/:id/roles
+│  │  ├─ dto/                 Bodies of POST /users and PUT /users/:id/roles; query of GET /users
 │  │  └─ users.controller.ts  HTTP routes
 │  └─ roles/
 │     └─ roles.controller.ts  GET /roles
@@ -232,7 +240,8 @@ src/
 │  └─ company.entity.ts   The company table
 ├─ users/                  Feature module, no controller
 │  ├─ users.service.ts     Users only: create (duplicate email, argon2 hash), soft delete by company, verifyCredentials for login
-│  ├─ user.repository.ts   All database calls for users; findForLogin is the only query that loads the hash
+│  ├─ user.repository.ts   All database calls for users; findForLogin is the only query that loads the hash; search (ILIKE, paging)
+│  ├─ user-search.ts       UserSearch: the list filters (companyId, q, limit, offset)
 │  ├─ users.module.ts
 │  ├─ user.entity.ts       The app_user table ("user" is a reserved word in Postgres)
 │  ├─ normalize-email.ts   Trim + lowercase, used wherever an email is stored or looked up
@@ -262,6 +271,7 @@ db/
 test/
 ├─ e2e-app.ts             Starts the app for e2e tests, resets the test database, logs in
 ├─ auth.e2e-spec.ts       Login, 401/403, tenant scope (404), /users/me, refresh rotation, reuse, logout
+├─ users.e2e-spec.ts      GET /users: scope, company filter, search, paging, 400s
 └─ app.e2e-spec.ts        GET / is public
 ```
 

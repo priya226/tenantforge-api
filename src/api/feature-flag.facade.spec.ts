@@ -56,6 +56,8 @@ describe('FeatureFlagFacade', () => {
     anyActive: vi.fn(),
     verifyCredentials: vi.fn(),
     findActive: vi.fn(),
+    search: vi.fn(),
+    rename: vi.fn(),
     findIdsInCompany: vi.fn(() => {
       calls.push('company-users');
       return Promise.resolve([USER_ID, 'u2']);
@@ -74,6 +76,7 @@ describe('FeatureFlagFacade', () => {
       Promise.resolve([...names].sort()),
     ),
     getUserRoles: vi.fn(),
+    getRolesForUsers: vi.fn(),
     getUserIdsWithRole: vi.fn(),
     removeAllRolesForUsers: vi.fn(() => {
       calls.push('roles');
@@ -302,6 +305,43 @@ describe('FeatureFlagFacade', () => {
         NotFoundException,
       );
       expect(roles.getUserRoles).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('renameUser', () => {
+    it('renames inside the caller scope and returns the user with roles', async () => {
+      users.rename.mockResolvedValue(makeUser());
+      roles.getUserRoles.mockResolvedValue(['VIEWER']);
+
+      const user = await facade.renameUser(admin, USER_ID, 'New');
+
+      expect(users.rename).toHaveBeenCalledWith(USER_ID, SCOPE, 'New');
+      expect(user.roles).toEqual(['VIEWER']);
+    });
+  });
+
+  describe('listUsers', () => {
+    it('searches in the caller scope and attaches roles loaded for the whole page', async () => {
+      const a = Object.assign(makeUser(), { id: 'u1' });
+      const b = Object.assign(makeUser(), { id: 'u2' });
+      users.search.mockResolvedValue({ items: [a, b], total: 7 });
+      roles.getRolesForUsers.mockResolvedValue(
+        new Map([
+          ['u1', ['COMPANY_ADMIN']],
+          ['u2', ['VIEWER']],
+        ]),
+      );
+      const query = { limit: 2, offset: 0, q: 'pri' };
+
+      const page = await facade.listUsers(admin, query);
+
+      expect(users.search).toHaveBeenCalledWith(SCOPE, query);
+      expect(roles.getRolesForUsers).toHaveBeenCalledWith(['u1', 'u2']);
+      expect(page.total).toBe(7);
+      expect(page.items.map((u) => [u.id, u.roles])).toEqual([
+        ['u1', ['COMPANY_ADMIN']],
+        ['u2', ['VIEWER']],
+      ]);
     });
   });
 

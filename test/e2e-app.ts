@@ -14,6 +14,62 @@ export const ADMIN = {
   password: 'e2e-admin-password-1',
 };
 
+export const PASSWORD = 'e2e-user-password-1';
+
+export interface Tenant {
+  companyId: string;
+  adminId: string;
+  adminEmail: string;
+  viewerId: string;
+  viewerEmail: string;
+}
+
+export async function createTenant(
+  app: INestApplication<App>,
+  platformToken: string,
+  name: string,
+): Promise<Tenant> {
+  const http = () => request(app.getHttpServer());
+  const auth = { Authorization: `Bearer ${platformToken}` };
+  const slug = name.toLowerCase();
+  const company = await http()
+    .post('/companies')
+    .set(auth)
+    .send({ name })
+    .expect(201);
+  const companyId = (company.body as { id: string }).id;
+
+  const admin = await http()
+    .post('/users')
+    .set(auth)
+    .send({
+      companyId,
+      name: `${name} Admin`,
+      email: `admin@${slug}.test`,
+      password: PASSWORD,
+      roles: ['COMPANY_ADMIN'],
+    })
+    .expect(201);
+  const viewer = await http()
+    .post('/users')
+    .set(auth)
+    .send({
+      companyId,
+      name: `${name} Viewer`,
+      email: `viewer@${slug}.test`,
+      password: PASSWORD,
+    })
+    .expect(201);
+
+  return {
+    companyId,
+    adminId: (admin.body as { id: string }).id,
+    adminEmail: `admin@${slug}.test`,
+    viewerId: (viewer.body as { id: string }).id,
+    viewerEmail: `viewer@${slug}.test`,
+  };
+}
+
 export async function createE2eApp(): Promise<INestApplication<App>> {
   const moduleRef = await Test.createTestingModule({
     imports: [AppModule],
