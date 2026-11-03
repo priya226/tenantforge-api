@@ -245,4 +245,112 @@ describe('Users (e2e)', () => {
         .expect(403);
     });
   });
+
+  describe('DELETE /users/:id', () => {
+    it('deletes a user with roles and sessions; the email becomes free again', async () => {
+      const viewer = await login(app, acme.viewerEmail, PASSWORD);
+      const { accessToken } = await login(app, acme.adminEmail, PASSWORD);
+      const auth = { Authorization: `Bearer ${accessToken}` };
+
+      await http().delete(`/users/${acme.viewerId}`).set(auth).expect(204);
+
+      await http().get(`/users/${acme.viewerId}`).set(auth).expect(404);
+      expect((await list(accessToken)).total).toBe(1);
+      await http()
+        .post('/auth/refresh')
+        .send({ refreshToken: viewer.refreshToken })
+        .expect(401);
+      await http()
+        .post('/auth/login')
+        .send({ email: acme.viewerEmail, password: PASSWORD })
+        .expect(401);
+      await http()
+        .get('/users/me')
+        .set('Authorization', `Bearer ${viewer.accessToken}`)
+        .expect(404);
+      await http()
+        .post('/users')
+        .set(auth)
+        .send({
+          companyId: acme.companyId,
+          name: 'Back Again',
+          email: acme.viewerEmail,
+          password: PASSWORD,
+        })
+        .expect(201);
+    });
+
+    it('returns 404 for a user of another company and deletes nothing', async () => {
+      const { accessToken } = await login(app, acme.adminEmail, PASSWORD);
+
+      await http()
+        .delete(`/users/${globex.viewerId}`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(404);
+      await http()
+        .get(`/users/${globex.viewerId}`)
+        .set('Authorization', `Bearer ${platformToken}`)
+        .expect(200);
+    });
+
+    it('refuses to delete your own account with 400', async () => {
+      const { accessToken } = await login(app, acme.adminEmail, PASSWORD);
+
+      await http()
+        .delete(`/users/${acme.adminId}`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(400);
+    });
+
+    it('keeps the last company admin (409) until another admin exists', async () => {
+      const auth = { Authorization: `Bearer ${platformToken}` };
+
+      await http().delete(`/users/${acme.adminId}`).set(auth).expect(409);
+      await http()
+        .put(`/users/${acme.viewerId}/roles`)
+        .set(auth)
+        .send({ roles: ['COMPANY_ADMIN'] })
+        .expect(200);
+      await http().delete(`/users/${acme.adminId}`).set(auth).expect(204);
+    });
+
+    it('keeps one admin when every admin is deleted at the same moment', async () => {
+      const auth = { Authorization: `Bearer ${platformToken}` };
+      const adminIds = [acme.adminId];
+      for (let i = 0; i < 5; i++) {
+        const res = await http()
+          .post('/users')
+          .set(auth)
+          .send({
+            companyId: acme.companyId,
+            name: `Extra Admin ${i}`,
+            email: `extra${i}@acme.test`,
+            password: PASSWORD,
+            roles: ['COMPANY_ADMIN'],
+          })
+          .expect(201);
+        adminIds.push((res.body as { id: string }).id);
+      }
+
+      const results = await Promise.all(
+        adminIds.map((id) => http().delete(`/users/${id}`).set(auth)),
+      );
+
+      const statuses = results.map((r) => r.status).sort((a, b) => a - b);
+      expect(statuses).toEqual([204, 204, 204, 204, 204, 409]);
+      const page = await list(platformToken, `?companyId=${acme.companyId}`);
+      expect(
+        page.items.filter((u) => u.roles.includes('COMPANY_ADMIN')),
+      ).toHaveLength(1);
+    });
+
+    it('is not available to a viewer', async () => {
+      const { accessToken } = await login(app, acme.viewerEmail, PASSWORD);
+
+      await http()
+        .delete(`/users/${acme.adminId}`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(403);
+    });
+  });
 });

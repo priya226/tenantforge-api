@@ -95,6 +95,34 @@ export class RolesService {
     }
   }
 
+  /** 409 if the user is the last admin among peerIds (COMPANY_ADMIN in a company, PLATFORM_ADMIN otherwise). */
+  async assertNotLastAdmin(
+    user: RoleHolder,
+    peerIds: string[],
+    tx: Transaction,
+  ): Promise<void> {
+    const adminRole: RoleName = user.companyId
+      ? 'COMPANY_ADMIN'
+      : 'PLATFORM_ADMIN';
+    const userRoles = this.userRoles.withTransaction(tx);
+    const isAdmin =
+      (await userRoles.countUsersWithRole(adminRole, [user.id])) > 0;
+    if (!isAdmin) {
+      return;
+    }
+    const others = await userRoles.countUsersWithRole(
+      adminRole,
+      peerIds.filter((id) => id !== user.id),
+    );
+    if (others === 0) {
+      throw new ConflictException(
+        user.companyId
+          ? 'Company must keep at least one admin'
+          : 'The platform must keep at least one platform admin',
+      );
+    }
+  }
+
   async replaceUserRoles(
     user: RoleHolder,
     names: RoleName[],

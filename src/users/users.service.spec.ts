@@ -176,6 +176,20 @@ describe('UsersService', () => {
     });
   });
 
+  describe('assertCanDelete', () => {
+    it('rejects deleting your own account with 400', () => {
+      expect(() => service.assertCanDelete(USER_ID, makeUser())).toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('allows deleting someone else', () => {
+      expect(() =>
+        service.assertCanDelete('someone-else', makeUser()),
+      ).not.toThrow();
+    });
+  });
+
   describe('create', () => {
     it('saves a normalized email and an argon2 hash in the given transaction, and returns the user without the hash', async () => {
       let saved: Partial<User> = {};

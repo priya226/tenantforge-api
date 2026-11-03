@@ -84,6 +84,60 @@ describe('RolesService', () => {
     service = moduleRef.get(RolesService);
   });
 
+  describe('assertNotLastAdmin (deleting a user)', () => {
+    const OTHER = 'other-user';
+    const TXN = 'tx' as never;
+
+    it('allows deleting a user who is not an admin', async () => {
+      userRoles.countUsersWithRole.mockResolvedValueOnce(0);
+
+      await service.assertNotLastAdmin(companyUser, [USER_ID, OTHER], TXN);
+
+      expect(userRoles.countUsersWithRole).toHaveBeenCalledOnce();
+      expect(userRoles.countUsersWithRole).toHaveBeenCalledWith(
+        'COMPANY_ADMIN',
+        [USER_ID],
+      );
+    });
+
+    it('allows deleting an admin when another admin remains', async () => {
+      userRoles.countUsersWithRole
+        .mockResolvedValueOnce(1)
+        .mockResolvedValueOnce(1);
+
+      await service.assertNotLastAdmin(companyUser, [USER_ID, OTHER], TXN);
+
+      expect(userRoles.countUsersWithRole).toHaveBeenLastCalledWith(
+        'COMPANY_ADMIN',
+        [OTHER],
+      );
+    });
+
+    it('rejects deleting the last company admin with 409', async () => {
+      userRoles.countUsersWithRole
+        .mockResolvedValueOnce(1)
+        .mockResolvedValueOnce(0);
+
+      await expect(
+        service.assertNotLastAdmin(companyUser, [USER_ID, OTHER], TXN),
+      ).rejects.toThrow('Company must keep at least one admin');
+    });
+
+    it('checks PLATFORM_ADMIN for a user without a company', async () => {
+      userRoles.countUsersWithRole
+        .mockResolvedValueOnce(1)
+        .mockResolvedValueOnce(0);
+
+      await expect(
+        service.assertNotLastAdmin(platformUser, [USER_ID], TXN),
+      ).rejects.toThrow('The platform must keep at least one platform admin');
+      expect(userRoles.countUsersWithRole).toHaveBeenCalledWith(
+        'PLATFORM_ADMIN',
+        [USER_ID],
+      );
+    });
+  });
+
   describe('last company admin', () => {
     const OTHER_ID = '9b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
 

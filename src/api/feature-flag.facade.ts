@@ -167,6 +167,22 @@ export class FeatureFlagFacade {
     return Object.assign(user, { roles: await this.roles.getUserRoles(id) });
   }
 
+  /** Deletes a user in the caller's scope with its roles and sessions; keeps the last admin. */
+  async removeUser(actor: TokenSubject, id: string): Promise<void> {
+    const user = await this.users.findOne(id, this.auth.tenantScope(actor));
+    this.users.assertCanDelete(actor.userId, user);
+    await this.transactions.run(async (tx) => {
+      if (user.companyId) {
+        await this.companies.lockForUpdate(user.companyId, tx);
+      }
+      const peerIds = await this.users.findIdsInCompany(user.companyId, tx);
+      await this.roles.assertNotLastAdmin(user, peerIds, tx);
+      await this.users.remove(user, tx);
+      await this.roles.removeAllRolesForUsers([user.id], tx);
+      await this.auth.revokeAllForUser(user.id, tx);
+    });
+  }
+
   async getUserRoles(actor: TokenSubject, id: string): Promise<RoleName[]> {
     await this.users.findOne(id, this.auth.tenantScope(actor));
     return this.roles.getUserRoles(id);

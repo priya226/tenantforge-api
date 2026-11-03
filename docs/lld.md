@@ -110,7 +110,7 @@ WHERE id = $2 AND company_id = $3 AND version = $expectedVersion AND is_deleted 
 | `GET /users/me` | Any user | Own record with roles | Built |
 | `GET /users?q=&companyId=&limit=&offset=` | Company admin (own company), platform admin (all) | Paged search, `{ items, total }`; roles per item (one `IN` query); `q` ILIKE on email/name; newest first; foreign `companyId` → 404 | Built |
 | `PATCH /users/{id}` | Company admin (own company), platform admin | Rename (`{ name }` only; other fields 400) | Built |
-| `DELETE /users/{id}` | Company admin (own company), platform admin | Soft delete + roles + revoke sessions; last-admin 409; self 400 | Next |
+| `DELETE /users/{id}` | Company admin (own company), platform admin | Soft delete + roles + revoke sessions in one transaction (company row locked); last COMPANY_ADMIN / PLATFORM_ADMIN 409; self 400 | Built |
 | `GET/POST /flags`, `PUT/DELETE /flags/{key}` | Admin (viewer: read) | Flags; `PUT` takes `expectedVersion` | Planned |
 | `POST /flags/{key}/rollback` | Admin | Roll back to a version | Planned |
 | `GET/PUT /settings/{key}` | Admin (viewer: read) | Config; `PUT` takes `expectedVersion` | Planned |

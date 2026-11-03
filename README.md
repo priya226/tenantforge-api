@@ -122,6 +122,7 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 | `GET` | `/users/me` | | `200` with the caller's own user and `roles`. **Any logged-in user**, including `VIEWER`. `404` if the account was deleted after login |
 | `GET` | `/users/:id` | | `200` with the user and its `roles`, or `404` |
 | `PATCH` | `/users/:id` | `{ "name": string }` | `200` with the updated user and `roles`. Only the name can change; any other field (e.g. `email`) gets `400`. `404` for a user outside your company |
+| `DELETE` | `/users/:id` | | `204`. Soft-deletes the user and their role mappings and **ends all their sessions** (refresh tokens revoked), in one transaction. `409` if they are the last company admin (or the last platform admin). `400` for your own account. `404` outside your company. The email can be reused afterwards |
 | `GET` | `/users/:id/roles` | | `200` `{ "roles": [...] }`, or `404` |
 | `PUT` | `/users/:id/roles` | `{ "roles": string[] }` | `200` `{ "roles": [...] }`. **Replaces** the whole set: removed roles are soft-deleted, new ones added |
 
@@ -337,10 +338,16 @@ The schema is changed only through Flyway migrations in `db/migration/`. TypeORM
 - The facade passes that scope to the services, and the services put it into the query (`WHERE id = ? AND company_id = ?`). A row in another company is simply not found, so the answer is `404`, not `403`: the API doesn't reveal that it exists.
 - Every new company-owned feature (flags, settings, audit) takes a `TenantScope` the same way.
 
+**Deleting a user**
+- `FeatureFlagFacade.removeUser` runs in one transaction: lock the company row (`FOR UPDATE`, the same lock as role changes), load the company's active user ids, `RolesService.assertNotLastAdmin` (409), then soft-delete the user, their role mappings and revoke their refresh tokens.
+- The lock makes simultaneous deletes in one company run one after another. Without it, deleting every admin at once could leave the company with none (an e2e test fires 6 deletes at once and expects exactly one 409).
+- An access token issued before the delete keeps working for at most 15 minutes, but every lookup ignores deleted users (`/users/me` → 404) and refresh fails.
+- Platform users aren't locked; a race could only remove both of two platform admins deleting each other at once, and `npm run seed:admin` recreates one.
+
 **Deleting a company**
 - `FeatureFlagFacade.removeCompany` soft-deletes the company, its users and their role mappings in one transaction.
 - When a new feature owns company data (flags, API keys, settings), its cleanup step is added there.
 
 ## Project status
 
-Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. Working end to end: the companies API (CRUD with soft delete), the users API (one company per user, argon2-hashed passwords), roles (a user can hold several; managed through `/users/:id/roles`; `GET /roles`; a company always keeps at least one admin), and `seed:admin` for the first platform admin. Authentication: login, refresh (rotating refresh tokens with reuse detection) and logout, with a global JWT guard and role checks on every route. Tenant scoping: company admins only see and change users of their own company. `GET /users/me` for every logged-in user. Next: the rest of the users API, then flags and config with versioning, optimistic locking (409), audit and rollback. See the [roadmap](docs/hld.md#11-roadmap).
+Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. Working end to end: the companies API (CRUD with soft delete), the users API (one company per user, argon2-hashed passwords), roles (a user can hold several; managed through `/users/:id/roles`; `GET /roles`; a company always keeps at least one admin), and `seed:admin` for the first platform admin. Authentication: login, refresh (rotating refresh tokens with reuse detection) and logout, with a global JWT guard and role checks on every route. Tenant scoping: company admins only see and change users of their own company. The users API: list with search and paging, rename, delete (sessions revoked, last admin kept), and `GET /users/me`. Next: the rest of the users API, then flags and config with versioning, optimistic locking (409), audit and rollback. See the [roadmap](docs/hld.md#11-roadmap).

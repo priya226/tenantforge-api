@@ -9,7 +9,10 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 
 import { ALL_COMPANIES, type TenantScope } from '../common/tenant-scope.js';
-import { TransactionRunner } from '../database/transaction-runner.js';
+import {
+  type Transaction,
+  TransactionRunner,
+} from '../database/transaction-runner.js';
 import type { RoleName } from '../roles/role-name.js';
 import { RefreshToken } from './refresh-token.entity.js';
 import { RefreshTokenRepository } from './refresh-token.repository.js';
@@ -133,6 +136,11 @@ export class AuthService {
       }
       throw error;
     }
+  }
+
+  /** Ends all sessions of a user inside tx (e.g. when the user is deleted). */
+  async revokeAllForUser(userId: string, tx: Transaction): Promise<void> {
+    await this.tokens.withTransaction(tx).revokeByUser(userId, new Date());
   }
 
   async logout(rawToken: string): Promise<void> {

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -58,6 +59,11 @@ describe('FeatureFlagFacade', () => {
     findActive: vi.fn(),
     search: vi.fn(),
     rename: vi.fn(),
+    assertCanDelete: vi.fn(),
+    remove: vi.fn(() => {
+      calls.push('remove-user');
+      return Promise.resolve();
+    }),
     findIdsInCompany: vi.fn(() => {
       calls.push('company-users');
       return Promise.resolve([USER_ID, 'u2']);
@@ -77,6 +83,10 @@ describe('FeatureFlagFacade', () => {
     ),
     getUserRoles: vi.fn(),
     getRolesForUsers: vi.fn(),
+    assertNotLastAdmin: vi.fn(() => {
+      calls.push('last-admin-check');
+      return Promise.resolve();
+    }),
     getUserIdsWithRole: vi.fn(),
     removeAllRolesForUsers: vi.fn(() => {
       calls.push('roles');
@@ -98,6 +108,10 @@ describe('FeatureFlagFacade', () => {
     rotate: vi.fn(() => Promise.resolve(tokens)),
     logout: vi.fn(() => Promise.resolve()),
     tenantScope: vi.fn(() => SCOPE),
+    revokeAllForUser: vi.fn(() => {
+      calls.push('revoke-sessions');
+      return Promise.resolve();
+    }),
   };
 
   beforeEach(async () => {
@@ -305,6 +319,69 @@ describe('FeatureFlagFacade', () => {
         NotFoundException,
       );
       expect(roles.getUserRoles).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('removeUser', () => {
+    it('locks the company, checks the last admin, then deletes user, roles and sessions in one transaction', async () => {
+      const user = makeUser();
+      users.findOne.mockResolvedValue(user);
+
+      await facade.removeUser(admin, USER_ID);
+
+      expect(users.findOne).toHaveBeenCalledWith(USER_ID, SCOPE);
+      expect(users.assertCanDelete).toHaveBeenCalledWith(admin.userId, user);
+      expect(transactions.run).toHaveBeenCalledOnce();
+      expect(calls).toEqual([
+        'lock',
+        'company-users',
+        'last-admin-check',
+        'remove-user',
+        'roles',
+        'revoke-sessions',
+      ]);
+      expect(roles.assertNotLastAdmin).toHaveBeenCalledWith(
+        user,
+        [USER_ID, 'u2'],
+        'tx',
+      );
+      expect(roles.removeAllRolesForUsers).toHaveBeenCalledWith(
+        [USER_ID],
+        'tx',
+      );
+      expect(auth.revokeAllForUser).toHaveBeenCalledWith(USER_ID, 'tx');
+    });
+
+    it('does not lock a company for a platform user', async () => {
+      users.findOne.mockResolvedValue(makeUser(null));
+
+      await facade.removeUser(admin, USER_ID);
+
+      expect(companies.lockForUpdate).not.toHaveBeenCalled();
+      expect(users.findIdsInCompany).toHaveBeenCalledWith(null, 'tx');
+    });
+
+    it('stops before the transaction when deleting yourself', async () => {
+      users.findOne.mockResolvedValue(makeUser());
+      users.assertCanDelete.mockImplementationOnce(() => {
+        throw new BadRequestException();
+      });
+
+      await expect(facade.removeUser(admin, USER_ID)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(transactions.run).not.toHaveBeenCalled();
+    });
+
+    it('deletes nothing when the last-admin check fails', async () => {
+      users.findOne.mockResolvedValue(makeUser());
+      roles.assertNotLastAdmin.mockRejectedValueOnce(new ConflictException());
+
+      await expect(facade.removeUser(admin, USER_ID)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(users.remove).not.toHaveBeenCalled();
+      expect(auth.revokeAllForUser).not.toHaveBeenCalled();
     });
   });
 

@@ -1,7 +1,10 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Patch,
   ParseUUIDPipe,
@@ -68,6 +71,15 @@ export class UsersController {
     @Body() dto: UpdateUserDto,
   ): Promise<UserWithRoles> {
     return this.facade.renameUser(me, id, dto.name);
+  }
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async remove(
+    @CurrentUser() me: CurrentUserInfo,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<void> {
+    await this.facade.removeUser(me, id);
   }
 
   @Get(':id/roles')

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { type FindOptionsWhere, ILike, In, Repository } from 'typeorm';
+import { type FindOptionsWhere, ILike, In, IsNull, Repository } from 'typeorm';
 
 import { BaseRepository } from '../common/base.repository.js';
 import type { UserSearch } from './user-search.js';
@@ -47,9 +47,10 @@ export class UserRepository extends BaseRepository<User> {
     return this.count({ id: In(ids) });
   }
 
-  async findIdsByCompany(companyId: string): Promise<string[]> {
+  /** Ids of active users in a company, or of all platform users when companyId is null. */
+  async findIdsByCompany(companyId: string | null): Promise<string[]> {
     const users = await this.find({
-      where: { companyId },
+      where: { companyId: companyId ?? IsNull() },
       select: { id: true },
     });
     return users.map((u) => u.id);

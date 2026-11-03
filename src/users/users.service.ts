@@ -118,8 +118,24 @@ export class UsersService {
     return saved;
   }
 
-  findIdsInCompany(companyId: string, tx: Transaction): Promise<string[]> {
+  /** Ids of active users in the company (or all platform users for null), inside tx. */
+  findIdsInCompany(
+    companyId: string | null,
+    tx: Transaction,
+  ): Promise<string[]> {
     return this.users.withTransaction(tx).findIdsByCompany(companyId);
+  }
+
+  /** 400 when someone tries to delete their own account. */
+  assertCanDelete(actorUserId: string, user: User): void {
+    if (actorUserId === user.id) {
+      throw new BadRequestException("You can't delete your own account");
+    }
+  }
+
+  /** Soft-deletes one user inside tx. */
+  async remove(user: User, tx: Transaction): Promise<void> {
+    await this.users.withTransaction(tx).softDelete(user);
   }
 
   async softDeleteByCompany(
