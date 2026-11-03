@@ -1,10 +1,12 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
+import { PassportModule } from '@nestjs/passport';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { DatabaseModule } from '../database/database.module.js';
 import { AuthService } from './auth.service.js';
+import { JwtStrategy } from './jwt.strategy.js';
 import { RefreshToken } from './refresh-token.entity.js';
 import { RefreshTokenRepository } from './refresh-token.repository.js';
 
@@ -12,6 +14,7 @@ import { RefreshTokenRepository } from './refresh-token.repository.js';
   imports: [
     TypeOrmModule.forFeature([RefreshToken]),
     DatabaseModule,
+    PassportModule,
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
@@ -21,7 +24,7 @@ import { RefreshTokenRepository } from './refresh-token.repository.js';
       }),
     }),
   ],
-  providers: [AuthService, RefreshTokenRepository],
+  providers: [AuthService, RefreshTokenRepository, JwtStrategy],
   exports: [AuthService],
 })
 export class AuthModule {}

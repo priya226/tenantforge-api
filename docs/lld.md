@@ -99,11 +99,11 @@ WHERE id = $2 AND company_id = $3 AND version = $expectedVersion AND is_deleted 
 
 | Method and path | Who | Purpose | Status |
 | --- | --- | --- | --- |
-| `POST/GET/PATCH/DELETE /companies[/{id}]` | Platform admin | Company CRUD; delete cascades to users and roles | Built (auth pending) |
-| `POST /users` | Company admin | Create a user (optional `roles[]`, default VIEWER) | Built (auth pending) |
-| `GET /users/{id}` | Company admin | User with roles | Built (auth pending) |
-| `GET/PUT /users/{id}/roles` | Company admin | Read / replace a user's roles | Built (auth pending) |
-| `GET /roles` | Any user | Roles that can be assigned | Built (auth pending) |
+| `POST/GET/PATCH/DELETE /companies[/{id}]` | Platform admin | Company CRUD; delete cascades to users and roles | Built |
+| `POST /users` | Company admin, platform admin | Create a user (optional `roles[]`, default VIEWER) | Built |
+| `GET /users/{id}` | Company admin, platform admin | User with roles | Built |
+| `GET/PUT /users/{id}/roles` | Company admin, platform admin | Read / replace a user's roles | Built |
+| `GET /roles` | Any user | Roles that can be assigned | Built |
 | `POST /auth/login` | Anyone | Email + password → access token + refresh token | Built |
 | `POST /auth/refresh` | Anyone with a refresh token | Rotate: new access token + new refresh token | Built |
 | `POST /auth/logout` | Anyone with a refresh token | Revoke the session (token family) | Built |
@@ -162,7 +162,8 @@ WHERE id = $2 AND company_id = $3 AND version = $expectedVersion AND is_deleted 
 - Rotation inserts the new token, then revokes the old one with `UPDATE … WHERE revoked_at IS NULL` in the same transaction. If another refresh already rotated it (0 rows), the transaction rolls back and the family is revoked.
 - Wrong email and wrong password both return the same 401 message.
 - A role change takes effect when the current access token expires (at most 15 minutes).
-- Every route needs a valid access token (a global guard). Login and refresh are marked public. `@Roles(...)` checks roles.
+- Every route needs a valid access token: `JwtAuthGuard` (passport-jwt, HS256 only) is a global guard; `@Public()` opts out (`/auth/*`, `GET /`). `RolesGuard` is global too: `@Roles(...)` on a controller or method requires one of those roles (403 otherwise); method-level overrides class-level; no `@Roles` = any logged-in user. `@CurrentUser()` gives `{ userId, companyId, roles }`.
+- Company admins are not yet limited to their own company's users (next step: tenant scoping).
 - Client rules:
   - Refresh only when a request needs it: the token has expired or is about to, or a request returned 401. Never on a timer, so an idle open tab still expires after 7 days.
   - Run only one refresh at a time. Two parallel refreshes with the same token would look like reuse and end the session.

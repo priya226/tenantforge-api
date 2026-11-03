@@ -11,11 +11,13 @@ import {
   Post,
 } from '@nestjs/common';
 
+import { Roles } from '../auth/roles.decorator.js';
 import { FeatureFlagFacade } from '../feature-flag.facade.js';
 import { Company } from '../../companies/company.entity.js';
 import { CreateCompanyDto } from './dto/create-company.dto.js';
 import { UpdateCompanyDto } from './dto/update-company.dto.js';
 
+@Roles('PLATFORM_ADMIN')
 @Controller('companies')
 export class CompaniesController {
   constructor(private readonly facade: FeatureFlagFacade) {}

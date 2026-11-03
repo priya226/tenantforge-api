@@ -111,7 +111,7 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 - `name` is required, trimmed, and at most 200 characters.
 - Unknown fields in the body are rejected with `400`, so a client can't set fields such as `isDeleted`.
 - A malformed `:id` (not a UUID) returns `400` before any database query runs.
-- These endpoints have no authentication yet. Later, only platform admins will be able to use them.
+- Requires a `PLATFORM_ADMIN` token. Others get `403`; no token gets `401`.
 
 ### Users
 
@@ -131,7 +131,7 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 - Each user belongs to one company (`company_id`). The company must exist and not be deleted, otherwise the response is `404`. A `NULL` company is reserved for platform admins, who can't be created through this endpoint.
 - `email` is trimmed and lowercased before saving. It must be unique among users that are not deleted, so a duplicate returns `409`.
 - `password` must be 12–128 characters, with no rules about symbols or digits, and it is not trimmed. It is stored only as an argon2id hash in `password_hash`. That column is `select: false`, so normal queries never load it.
-- No authentication yet. Later, only company admins will be able to create users, and only in their own company.
+- Requires a `COMPANY_ADMIN` or `PLATFORM_ADMIN` token (`403` otherwise). Not yet limited to the caller's own company; that comes next.
 
 ### Roles
 
@@ -187,6 +187,14 @@ src/
 ├─ api/             HTTP layer: controllers + the one facade they all call
 │  ├─ api.module.ts          Imports the feature modules the facade uses
 │  ├─ feature-flag.facade.ts FeatureFlagFacade: the single entry point; calls the right service(s), no business rules
+│  ├─ auth/
+│  │  ├─ dto/                       Bodies of login, refresh and logout
+│  │  ├─ auth.controller.ts         POST /auth/login, /auth/refresh, /auth/logout (public)
+│  │  ├─ jwt-auth.guard.ts          Global guard: every route needs a valid access token unless @Public()
+│  │  ├─ roles.guard.ts             Global guard: 403 unless the token holds one of the route's @Roles
+│  │  ├─ public.decorator.ts        @Public()
+│  │  ├─ roles.decorator.ts         @Roles(...)
+│  │  └─ current-user.decorator.ts  @CurrentUser(): { userId, companyId, roles } from the token
 │  ├─ companies/
 │  │  ├─ dto/                     Request bodies with validation rules
 │  │  └─ companies.controller.ts  HTTP routes
@@ -221,6 +229,7 @@ src/
 │  └─ roles.module.ts
 ├─ auth/                   Feature module, no controller (tokens only; knows nothing about users or roles)
 │  ├─ auth.service.ts              Sign access tokens; start, check, rotate and end refresh-token sessions
+│  ├─ jwt.strategy.ts              Checks the Bearer token's HS256 signature and expiry; puts the claims on the request
 │  ├─ refresh-token.entity.ts      The refresh_token table (stores only token hashes)
 │  ├─ refresh-token.repository.ts  Find by hash, rotate one token, revoke a whole family
 │  └─ auth.module.ts               JWT settings (HS256, JWT_SECRET)
@@ -276,10 +285,23 @@ The schema is changed only through Flyway migrations in `db/migration/`. TypeORM
 - The lock makes role changes in the same company run one after another. Without it, two admins demoting each other at the same moment would both see "another admin exists" and both succeed. Other companies are not blocked.
 - Platform users are not locked: they can only hold `PLATFORM_ADMIN`, and a user must keep at least one role.
 
+**Authentication and access**
+- Every route needs a valid access token by default (`JwtAuthGuard` is global). Only `@Public()` routes skip it: `/auth/*` and `GET /`.
+- `RolesGuard` (also global) runs after it. A route or controller with `@Roles(...)` needs at least one of those roles; a method-level `@Roles` overrides the controller's. Without `@Roles`, any logged-in user may call it.
+- Only HS256 tokens signed with `JWT_SECRET` are accepted; `alg: none` and other algorithms are rejected.
+- Roles are read from the token, so a role change applies within one access-token lifetime (15 minutes).
+
+| Routes | Roles |
+| --- | --- |
+| `/auth/*`, `GET /` | public |
+| `/companies` | `PLATFORM_ADMIN` |
+| `/users` | `COMPANY_ADMIN`, `PLATFORM_ADMIN` |
+| `/roles` | any logged-in user |
+
 **Deleting a company**
 - `FeatureFlagFacade.removeCompany` soft-deletes the company, its users and their role mappings in one transaction.
 - When a new feature owns company data (flags, API keys, settings), its cleanup step is added there.
 
 ## Project status
 
-Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. Working end to end: the companies API (CRUD with soft delete), the users API (one company per user, argon2-hashed passwords), roles (a user can hold several; managed through `/users/:id/roles`; `GET /roles`; a company always keeps at least one admin), and `seed:admin` for the first platform admin. Next: the rest of the users API, then authentication (JWT) and tenant scoping, then flags and config with versioning, optimistic locking (409), audit and rollback. See the [roadmap](docs/hld.md#11-roadmap).
+Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. Working end to end: the companies API (CRUD with soft delete), the users API (one company per user, argon2-hashed passwords), roles (a user can hold several; managed through `/users/:id/roles`; `GET /roles`; a company always keeps at least one admin), and `seed:admin` for the first platform admin. Authentication: login, refresh (rotating refresh tokens with reuse detection) and logout, with a global JWT guard and role checks on every route. Next: tenant scoping (company admins limited to their own company), `GET /users/me`, the rest of the users API, then flags and config with versioning, optimistic locking (409), audit and rollback. See the [roadmap](docs/hld.md#11-roadmap).

@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 
 import type { RoleName } from '../../roles/role-name.js';
+import { Roles } from '../auth/roles.decorator.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
 import { UpdateUserRolesDto } from './dto/update-user-roles.dto.js';
 import {
@@ -16,6 +17,7 @@ import {
   type UserWithRoles,
 } from '../feature-flag.facade.js';
 
+@Roles('COMPANY_ADMIN', 'PLATFORM_ADMIN')
 @Controller('users')
 export class UsersController {
   constructor(private readonly facade: FeatureFlagFacade) {}
