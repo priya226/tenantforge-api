@@ -8,7 +8,7 @@ import {
   Put,
 } from '@nestjs/common';
 
-import type { RoleName } from '../../roles/role-name.js';
+import { ROLE_NAMES, type RoleName } from '../../roles/role-name.js';
 import {
   CurrentUser,
   type CurrentUserInfo,
@@ -32,6 +32,12 @@ export class UsersController {
     @Body() dto: CreateUserDto,
   ): Promise<UserWithRoles> {
     return this.facade.createUser(me, dto);
+  }
+
+  @Get('me')
+  @Roles(...ROLE_NAMES)
+  findMe(@CurrentUser() me: CurrentUserInfo): Promise<UserWithRoles> {
+    return this.facade.findUser(me, me.userId);
   }
 
   @Get(':id')

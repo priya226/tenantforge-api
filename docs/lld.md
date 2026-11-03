@@ -107,7 +107,7 @@ WHERE id = $2 AND company_id = $3 AND version = $expectedVersion AND is_deleted 
 | `POST /auth/login` | Anyone | Email + password → access token + refresh token | Built |
 | `POST /auth/refresh` | Anyone with a refresh token | Rotate: new access token + new refresh token | Built |
 | `POST /auth/logout` | Anyone with a refresh token | Revoke the session (token family) | Built |
-| `GET /users/me` | Any user | Own record with roles | Next |
+| `GET /users/me` | Any user | Own record with roles | Built |
 | `GET /users?q=&companyId=&limit=&offset=` | Company admin (own company), platform admin (all) | Paged search, `{ items, total }` | After auth |
 | `PATCH/DELETE /users/{id}` | Company admin | Rename, delete | After auth |
 | `GET/POST /flags`, `PUT/DELETE /flags/{key}` | Admin (viewer: read) | Flags; `PUT` takes `expectedVersion` | Planned |

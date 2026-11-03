@@ -118,6 +118,7 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |
 | `POST` | `/users` | `{ "companyId": uuid, "name": string, "email": string, "password": string, "roles"?: string[] }` | `201` with the created user and its `roles` (never includes the password hash) |
+| `GET` | `/users/me` | | `200` with the caller's own user and `roles`. **Any logged-in user**, including `VIEWER`. `404` if the account was deleted after login |
 | `GET` | `/users/:id` | | `200` with the user and its `roles`, or `404` |
 | `GET` | `/users/:id/roles` | | `200` `{ "roles": [...] }`, or `404` |
 | `PUT` | `/users/:id/roles` | `{ "roles": string[] }` | `200` `{ "roles": [...] }`. **Replaces** the whole set: removed roles are soft-deleted, new ones added |
@@ -131,7 +132,7 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 - Each user belongs to one company (`company_id`). The company must exist and not be deleted, otherwise the response is `404`. A `NULL` company is reserved for platform admins, who can't be created through this endpoint.
 - `email` is trimmed and lowercased before saving. It must be unique among users that are not deleted, so a duplicate returns `409`.
 - `password` must be 12–128 characters, with no rules about symbols or digits, and it is not trimmed. It is stored only as an argon2id hash in `password_hash`. That column is `select: false`, so normal queries never load it.
-- Requires a `COMPANY_ADMIN` or `PLATFORM_ADMIN` token (`403` otherwise).
+- Requires a `COMPANY_ADMIN` or `PLATFORM_ADMIN` token (`403` otherwise), except `GET /users/me`.
 - A company admin works only inside their own company: another company's user (or company id in `POST /users`) returns `404`, as if it didn't exist. A platform admin works in every company.
 
 ### Roles
@@ -297,6 +298,7 @@ The schema is changed only through Flyway migrations in `db/migration/`. TypeORM
 | `/auth/*`, `GET /` | public |
 | `/companies` | `PLATFORM_ADMIN` |
 | `/users` | `COMPANY_ADMIN`, `PLATFORM_ADMIN` |
+| `GET /users/me` | any logged-in user (method-level `@Roles` with every role) |
 | `/roles` | any logged-in user |
 
 **Tenant scope**
@@ -310,4 +312,4 @@ The schema is changed only through Flyway migrations in `db/migration/`. TypeORM
 
 ## Project status
 
-Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. Working end to end: the companies API (CRUD with soft delete), the users API (one company per user, argon2-hashed passwords), roles (a user can hold several; managed through `/users/:id/roles`; `GET /roles`; a company always keeps at least one admin), and `seed:admin` for the first platform admin. Authentication: login, refresh (rotating refresh tokens with reuse detection) and logout, with a global JWT guard and role checks on every route. Tenant scoping: company admins only see and change users of their own company. Next: `GET /users/me`, the rest of the users API, then flags and config with versioning, optimistic locking (409), audit and rollback. See the [roadmap](docs/hld.md#11-roadmap).
+Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. Working end to end: the companies API (CRUD with soft delete), the users API (one company per user, argon2-hashed passwords), roles (a user can hold several; managed through `/users/:id/roles`; `GET /roles`; a company always keeps at least one admin), and `seed:admin` for the first platform admin. Authentication: login, refresh (rotating refresh tokens with reuse detection) and logout, with a global JWT guard and role checks on every route. Tenant scoping: company admins only see and change users of their own company. `GET /users/me` for every logged-in user. Next: the rest of the users API, then flags and config with versioning, optimistic locking (409), audit and rollback. See the [roadmap](docs/hld.md#11-roadmap).
