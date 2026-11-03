@@ -153,6 +153,8 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 | `GET` | `/flags/:key?companyId=` | | `200` with the flag, or `404` |
 | `PUT` | `/flags/:key` | `{ "expectedVersion": n, "description"?: string \| null, "enabled": bool, "rolloutType": "PERCENT" \| "COUNT", "rolloutValue": n, "rules": [...] }` | `200` with the flag at `version` n+1. **Replaces** the whole state. `409` "changed by someone else" if the flag is no longer at `expectedVersion` |
 | `DELETE` | `/flags/:key?expectedVersion=n` | | `204`. Soft delete; the key can be used again. `409` if the flag is no longer at `expectedVersion` |
+| `GET` | `/flags/:key/history?limit=&offset=&companyId=` | | `200` `{ "items": [audit event], "total": n }`, newest version first. Each event has `version`, `action` (`CREATE`, `UPDATE`, `ROLLBACK`), `userId`, `createdAt`, and the full `before` / `after` state |
+| `POST` | `/flags/:key/rollback` | `{ "toVersion": n, "expectedVersion": n }` | `200` with the flag at a **new** version whose state equals version `toVersion`. `409` if the flag is no longer at `expectedVersion`. `400` if `toVersion` isn't earlier than the current version. `404` for an unknown version |
 
 - **Who:** `COMPANY_ADMIN` creates, edits and deletes flags of their own company. `VIEWER` reads them. `PLATFORM_ADMIN` reads any company's flags with `?companyId=` (required for them) but can't change them. Another company's flag or `companyId` returns `404`.
 - **Key:** 2–64 characters, lowercase letters, digits and dashes, starting with a letter. It identifies the flag in URLs and SDKs, so it can't be changed (sending `key` in `PUT` returns `400`).
@@ -161,7 +163,9 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
   - `COUNT`: `rolloutValue` 1–10,000. Only the first that many users get the flag (first come, first served). The server hands out these places; the SDK claim endpoint comes with the SDK work.
 - **Rules:** a list of `{ attribute, value, rolloutType, rolloutValue }` (at most 50). A user whose `attribute` equals `value` gets **that rule's** rollout, which can be `PERCENT` or `COUNT` on its own (e.g. region `IN` → first 10 users, region `US` → 30%). The first matching rule wins; everyone who matches no rule gets the flag's own `rolloutType` / `rolloutValue`. COUNT places are counted per rule, identified by its attribute and value. Two rules for the same attribute and value return `400`.
 - **Optimistic locking:** every change sets `version` to the next number. A client sends the version it last read. The update runs as `UPDATE … WHERE version = expected`, so when two admins save the same version, exactly one wins and the other gets `409`.
-- **Audit:** every create, update and delete writes an `audit_event` row in the same transaction, with full before/after snapshots and who made the change. If the change fails, no audit row is written. History and rollback endpoints come next.
+- **Audit:** every create, update and delete writes an `audit_event` row in the same transaction, with full before/after snapshots and who made the change. If the change fails, no audit row is written. `GET /flags/:key/history` reads these rows.
+- **Rollback** never deletes history. It copies the `after` state of version `toVersion` into the flag as a new version, writes a `ROLLBACK` audit row, and goes through the same `expectedVersion` check as `PUT`. A rollback can itself be rolled back. Deleted flags can't be rolled back (history and rollback return `404`).
+- `limit` 1–100 (default 20), `offset` ≥ 0. A viewer can read history; only a company admin can roll back.
 - Deleting a company soft-deletes its flags too.
 
 ### Roles
@@ -250,7 +254,7 @@ src/
 │  │  ├─ dto/                 Bodies of POST /users and PUT /users/:id/roles; query of GET /users
 │  │  └─ users.controller.ts  HTTP routes
 │  ├─ flags/
-│  │  ├─ dto/                 Bodies of POST and PUT /flags; key, companyId and expectedVersion params
+│  │  ├─ dto/                 Bodies of POST/PUT /flags and rollback; key, companyId, expectedVersion and history params
 │  │  └─ flags.controller.ts  HTTP routes
 │  └─ roles/
 │     └─ roles.controller.ts  GET /roles
@@ -294,8 +298,8 @@ src/
 │  └─ flags.module.ts
 ├─ audit/                  Feature module, no controller (shared by flags and, later, settings)
 │  ├─ audit-event.entity.ts      The audit_event table (before/after snapshots)
-│  ├─ audit.service.ts           Appends an audit row inside the caller's transaction
-│  ├─ audit-event.repository.ts  All database calls for audit events
+│  ├─ audit.service.ts           Appends an audit row in the caller's transaction; history page; state at a version
+│  ├─ audit-event.repository.ts  Insert, page of an entity's history, row for one version (always by company)
 │  └─ audit.module.ts
 ├─ seed/
 │  └─ seed-admin.ts       npm run seed:admin: starts Nest without HTTP, calls FeatureFlagFacade.ensurePlatformAdmin
@@ -386,4 +390,4 @@ The schema is changed only through Flyway migrations in `db/migration/`. TypeORM
 
 ## Project status
 
-Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. Working end to end: the companies API (CRUD with soft delete), the users API (one company per user, argon2-hashed passwords), roles (a user can hold several; managed through `/users/:id/roles`; `GET /roles`; a company always keeps at least one admin), and `seed:admin` for the first platform admin. Authentication: login, refresh (rotating refresh tokens with reuse detection) and logout, with a global JWT guard and role checks on every route. Tenant scoping: company admins only see and change users of their own company. The users API: list with search and paging, rename, delete (sessions revoked, last admin kept), and `GET /users/me`. Flags: create, read, replace and delete with optimistic locking (`expectedVersion`, 409) and an audit row per change in the same transaction. Next: flag history and rollback, then API keys and the SDK read path. See the [roadmap](docs/hld.md#11-roadmap).
+Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. Working end to end: the companies API (CRUD with soft delete), the users API (one company per user, argon2-hashed passwords), roles (a user can hold several; managed through `/users/:id/roles`; `GET /roles`; a company always keeps at least one admin), and `seed:admin` for the first platform admin. Authentication: login, refresh (rotating refresh tokens with reuse detection) and logout, with a global JWT guard and role checks on every route. Tenant scoping: company admins only see and change users of their own company. The users API: list with search and paging, rename, delete (sessions revoked, last admin kept), and `GET /users/me`. Flags: create, read, replace and delete with optimistic locking (`expectedVersion`, 409) and an audit row per change in the same transaction. Flag history and one-click rollback (a new version, never deleting history). Next: API keys and the SDK read path. See the [roadmap](docs/hld.md#11-roadmap).

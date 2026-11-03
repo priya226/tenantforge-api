@@ -18,13 +18,15 @@ import {
   type CurrentUserInfo,
 } from '../auth/current-user.decorator.js';
 import { Roles } from '../auth/roles.decorator.js';
-import { FeatureFlagFacade } from '../feature-flag.facade.js';
+import { type AuditPage, FeatureFlagFacade } from '../feature-flag.facade.js';
 import { CreateFlagDto } from './dto/create-flag.dto.js';
 import {
   CompanyQuery,
   ExpectedVersionQuery,
   FlagKeyParams,
 } from './dto/flag-params.js';
+import { FlagHistoryQuery } from './dto/flag-history.query.js';
+import { RollbackFlagDto } from './dto/rollback-flag.dto.js';
 import { UpdateFlagDto } from './dto/update-flag.dto.js';
 
 @Roles('COMPANY_ADMIN')
@@ -49,6 +51,16 @@ export class FlagsController {
     @Query() query: CompanyQuery,
   ): Promise<FeatureFlag> {
     return this.facade.findFlag(me, params.key, query.companyId);
+  }
+
+  @Get(':key/history')
+  @Roles(...ROLE_NAMES)
+  history(
+    @CurrentUser() me: CurrentUserInfo,
+    @Param() params: FlagKeyParams,
+    @Query() query: FlagHistoryQuery,
+  ): Promise<AuditPage> {
+    return this.facade.flagHistory(me, params.key, query);
   }
 
   @Post()
@@ -77,5 +89,20 @@ export class FlagsController {
     @Query() query: ExpectedVersionQuery,
   ): Promise<void> {
     await this.facade.removeFlag(me, params.key, query.expectedVersion);
+  }
+
+  @Post(':key/rollback')
+  @HttpCode(HttpStatus.OK)
+  rollback(
+    @CurrentUser() me: CurrentUserInfo,
+    @Param() params: FlagKeyParams,
+    @Body() dto: RollbackFlagDto,
+  ): Promise<FeatureFlag> {
+    return this.facade.rollbackFlag(
+      me,
+      params.key,
+      dto.toVersion,
+      dto.expectedVersion,
+    );
   }
 }

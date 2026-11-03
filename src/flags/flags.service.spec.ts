@@ -296,6 +296,42 @@ describe('FlagsService', () => {
     });
   });
 
+  describe('rollback', () => {
+    it('allows only an earlier version', () => {
+      const flag = makeFlag({ version: 3 });
+
+      expect(() => service.assertCanRollBack(flag, 2)).not.toThrow();
+      expect(() => service.assertCanRollBack(flag, 3)).toThrow(
+        BadRequestException,
+      );
+      expect(() => service.assertCanRollBack(flag, 4)).toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('restore saves the old state through the same version check', async () => {
+      repo.updateIfVersion.mockResolvedValue(true);
+      repo.findOneBy.mockResolvedValue(makeFlag({ version: 4 }));
+      const old = { ...state, key: 'new-checkout', version: 1 };
+
+      const restored = await service.restore(
+        makeFlag({ version: 3 }),
+        3,
+        old,
+        TX,
+      );
+
+      expect(repo.updateIfVersion).toHaveBeenCalledWith('flag-1', 3, state);
+      expect(restored.version).toBe(4);
+    });
+
+    it('restore returns 409 when the flag moved on', async () => {
+      await expect(
+        service.restore(makeFlag({ version: 3 }), 2, { ...state }, TX),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+  });
+
   it('remove soft-deletes at the expected version and returns the next version', async () => {
     repo.updateIfVersion.mockResolvedValue(true);
 

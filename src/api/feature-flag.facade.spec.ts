@@ -124,11 +124,21 @@ describe('FeatureFlagFacade', () => {
       return Promise.resolve();
     }),
     snapshot: vi.fn((f: FeatureFlag) => ({ key: f.key, version: f.version })),
+    assertCanRollBack: vi.fn(),
+    restore: vi.fn(() => {
+      calls.push('restore-flag');
+      return Promise.resolve(makeFlag(4));
+    }),
   };
   const audit = {
     record: vi.fn(() => {
       calls.push('audit');
       return Promise.resolve();
+    }),
+    history: vi.fn(),
+    stateAt: vi.fn(() => {
+      calls.push('state-at');
+      return Promise.resolve({ enabled: false });
     }),
   };
   const transactions = {
@@ -606,6 +616,62 @@ describe('FeatureFlagFacade', () => {
         }),
         'tx',
       );
+    });
+
+    it('reads history of the flag found by key, in the resolved company', async () => {
+      audit.history.mockResolvedValue({ items: [], total: 0 });
+
+      await facade.flagHistory(admin, 'new-checkout', { limit: 20, offset: 0 });
+
+      expect(audit.history).toHaveBeenCalledWith(
+        { companyId: COMPANY_ID, entityType: 'FLAG', entityId: 'flag-1' },
+        20,
+        0,
+      );
+    });
+
+    it('rolls back: reads the old state, restores it and audits ROLLBACK, in one transaction', async () => {
+      flags.findByKey.mockResolvedValueOnce(makeFlag(3));
+
+      const restored = await facade.rollbackFlag(admin, 'new-checkout', 1, 3);
+
+      expect(restored.version).toBe(4);
+      expect(flags.assertCanRollBack).toHaveBeenCalledWith(
+        expect.objectContaining({ version: 3 }),
+        1,
+      );
+      expect(calls).toEqual(['state-at', 'restore-flag', 'audit']);
+      expect(audit.stateAt).toHaveBeenCalledWith(
+        { companyId: COMPANY_ID, entityType: 'FLAG', entityId: 'flag-1' },
+        1,
+        'tx',
+      );
+      expect(flags.restore).toHaveBeenCalledWith(
+        expect.objectContaining({ version: 3 }),
+        3,
+        { enabled: false },
+        'tx',
+      );
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'ROLLBACK',
+          version: 4,
+          before: { key: 'new-checkout', version: 3 },
+          after: { key: 'new-checkout', version: 4 },
+        }),
+        'tx',
+      );
+    });
+
+    it('rejects a rollback to a non-earlier version before opening a transaction', async () => {
+      flags.assertCanRollBack.mockImplementationOnce(() => {
+        throw new BadRequestException();
+      });
+
+      await expect(
+        facade.rollbackFlag(admin, 'new-checkout', 5, 1),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(transactions.run).not.toHaveBeenCalled();
     });
 
     it('stops at 404 before opening a transaction when the flag is missing', async () => {

@@ -122,7 +122,8 @@ WHERE id = $2 AND company_id = $3 AND version = $expectedVersion AND is_deleted 
 | `GET /flags[/{key}]?companyId=` | Any user of the company; platform admin with `companyId` (required) | List sorted by key / one flag; foreign company 404 | Built |
 | `PUT /flags/{key}` | Company admin | Replace full state with `expectedVersion`; stale 409; UPDATE audit row | Built |
 | `DELETE /flags/{key}?expectedVersion=` | Company admin | Soft delete; stale 409; DELETE audit row; key reusable | Built |
-| `POST /flags/{key}/rollback` | Admin | Roll back to a version | Planned |
+| `GET /flags/{key}/history?limit=&offset=` | Any user of the company; platform admin with `companyId` | Audit rows newest version first, `{ items, total }` | Built |
+| `POST /flags/{key}/rollback` | Company admin | `{ toVersion, expectedVersion }`: state of `toVersion` saved as a new version + ROLLBACK audit row; stale 409; non-earlier version 400; deleted flag 404 | Built |
 | `GET/PUT /settings/{key}` | Admin (viewer: read) | Config; `PUT` takes `expectedVersion` | Planned |
 | `POST /settings/{key}/rollback` | Admin | Roll back to a version | Planned |
 | `GET /audit?type=&key=&user=&from=&to=` | Admin, viewer | History | Planned |
@@ -217,3 +218,4 @@ WHERE id = $2 AND company_id = $3 AND version = $expectedVersion AND is_deleted 
 | A company delete soft-deletes its flags without audit rows. | One DELETE audit row per flag (history of a deleted company is not used). |
 | Two rollout modes: `PERCENT` (hash of user id, evaluated in the SDK) and `COUNT` (first N users; the server hands out places). Each rule has its own rollout (PERCENT or COUNT); the flag's rollout covers users who match no rule. COUNT places are counted per rule, keyed by its (attribute, value). | Explicit user-id lists only (admin must pick people); approximating N users as a tiny percent (not exact). |
 | Rules are a JSONB array on the flag, with a database CHECK (JSON path) on each rule's shape. A table is used only for things with their own identity or that are counted/locked on their own (`user_role`, COUNT places). | A `feature_flag_rule` table: rules are only ever read and written with their flag, so a table adds joins, diffs on save and row rebuilds on rollback. |
+| Rollback targets a version number (`toVersion`) and needs `expectedVersion`; deleted flags can't be rolled back. | Targeting an audit event id (less readable for admins); undelete through rollback (needs key-reuse rules; later if needed). |

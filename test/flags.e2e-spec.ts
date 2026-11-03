@@ -496,6 +496,167 @@ describe('Flags (e2e)', () => {
     });
   });
 
+  describe('history and rollback', () => {
+    interface HistoryItem {
+      version: number;
+      action: string;
+      userId: string;
+      before: { enabled: boolean; rolloutValue: number } | null;
+      after: { enabled: boolean; rolloutValue: number } | null;
+    }
+    interface HistoryPage {
+      items: HistoryItem[];
+      total: number;
+    }
+
+    async function save(enabled: boolean, version: number, rolloutValue = 100) {
+      await http()
+        .put('/flags/new-checkout')
+        .set(adminAuth)
+        .send({ ...state(enabled, version), rolloutValue })
+        .expect(200);
+    }
+
+    async function rollback(body: object, status: number) {
+      return http()
+        .post('/flags/new-checkout/rollback')
+        .set(adminAuth)
+        .send(body)
+        .expect(status);
+    }
+
+    async function history(query = '', auth = adminAuth): Promise<HistoryPage> {
+      const res = await http()
+        .get(`/flags/new-checkout/history${query}`)
+        .set(auth)
+        .expect(200);
+      return res.body as HistoryPage;
+    }
+
+    it('lists every change newest first, with who and before/after', async () => {
+      await createFlag('new-checkout');
+      await save(true, 1, 40);
+
+      const page = await history();
+
+      expect(page.total).toBe(2);
+      expect(page.items.map((e) => [e.version, e.action])).toEqual([
+        [2, 'UPDATE'],
+        [1, 'CREATE'],
+      ]);
+      expect(page.items[0]).toMatchObject({
+        userId: acme.adminId,
+        before: { enabled: false, rolloutValue: 100 },
+        after: { enabled: true, rolloutValue: 40 },
+      });
+    });
+
+    it('pages with limit and offset', async () => {
+      await createFlag('new-checkout');
+      await save(true, 1);
+      await save(false, 2);
+
+      const first = await history('?limit=2');
+      const second = await history('?limit=2&offset=2');
+
+      expect(first.items.map((e) => e.version)).toEqual([3, 2]);
+      expect(second.items.map((e) => e.version)).toEqual([1]);
+      expect([first.total, second.total]).toEqual([3, 3]);
+    });
+
+    it('is readable by a viewer and a platform admin, and hidden from other companies', async () => {
+      await createFlag('new-checkout');
+      const viewer = await login(app, acme.viewerEmail, PASSWORD);
+      const other = await login(app, globex.adminEmail, PASSWORD);
+
+      await history('', { Authorization: `Bearer ${viewer.accessToken}` });
+      await history(`?companyId=${acme.companyId}`, {
+        Authorization: `Bearer ${platformToken}`,
+      });
+      await http()
+        .get('/flags/new-checkout/history')
+        .set('Authorization', `Bearer ${other.accessToken}`)
+        .expect(404);
+    });
+
+    it('restores an old state as a new version with a ROLLBACK audit row', async () => {
+      await createFlag('new-checkout');
+      await save(true, 1, 40);
+      await save(true, 2, 90);
+
+      const res = await rollback({ toVersion: 2, expectedVersion: 3 }, 200);
+
+      expect(res.body).toMatchObject({
+        version: 4,
+        enabled: true,
+        rolloutValue: 40,
+      });
+      const page = await history();
+      expect(page.items.map((e) => [e.version, e.action])).toEqual([
+        [4, 'ROLLBACK'],
+        [3, 'UPDATE'],
+        [2, 'UPDATE'],
+        [1, 'CREATE'],
+      ]);
+      expect(page.items[0]).toMatchObject({
+        before: { rolloutValue: 90 },
+        after: { rolloutValue: 40 },
+      });
+    });
+
+    it('can roll back a rollback', async () => {
+      await createFlag('new-checkout');
+      await save(true, 1);
+      await rollback({ toVersion: 1, expectedVersion: 2 }, 200);
+
+      const res = await rollback({ toVersion: 2, expectedVersion: 3 }, 200);
+
+      expect(res.body).toMatchObject({ version: 4, enabled: true });
+    });
+
+    it('rejects a stale expectedVersion with 409 and writes nothing', async () => {
+      await createFlag('new-checkout');
+      await save(true, 1);
+      await save(false, 2);
+
+      await rollback({ toVersion: 1, expectedVersion: 2 }, 409);
+
+      expect((await history()).total).toBe(3);
+    });
+
+    it('rejects a current, future or missing target version with 400', async () => {
+      await createFlag('new-checkout');
+      await save(true, 1);
+
+      await rollback({ toVersion: 2, expectedVersion: 2 }, 400);
+      await rollback({ toVersion: 5, expectedVersion: 2 }, 400);
+      await rollback({ expectedVersion: 2 }, 400);
+      await rollback({ toVersion: 0, expectedVersion: 2 }, 400);
+    });
+
+    it('is only for company admins, and 404 for a deleted flag', async () => {
+      await createFlag('new-checkout');
+      await save(true, 1);
+      const viewer = await login(app, acme.viewerEmail, PASSWORD);
+
+      await http()
+        .post('/flags/new-checkout/rollback')
+        .set('Authorization', `Bearer ${viewer.accessToken}`)
+        .send({ toVersion: 1, expectedVersion: 2 })
+        .expect(403);
+
+      await http()
+        .delete('/flags/new-checkout?expectedVersion=2')
+        .set(adminAuth)
+        .expect(204);
+      await rollback({ toVersion: 1, expectedVersion: 3 }, 404);
+      await http()
+        .get('/flags/new-checkout/history')
+        .set(adminAuth)
+        .expect(404);
+    });
+  });
+
   it('deleting a company soft-deletes its flags', async () => {
     await createFlag('new-checkout');
 

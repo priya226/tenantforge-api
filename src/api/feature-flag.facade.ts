@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 
-import { AuditService } from '../audit/audit.service.js';
+import { type AuditPage, AuditService } from '../audit/audit.service.js';
 import {
   type AuthTokens,
   AuthService,
@@ -36,6 +36,14 @@ export interface CreateUserRequest {
 }
 
 export type UserWithRoles = User & { roles: RoleName[] };
+
+export type { AuditPage };
+
+export interface HistoryPage {
+  companyId?: string;
+  limit: number;
+  offset: number;
+}
 
 export interface UserListPage {
   items: UserWithRoles[];
@@ -312,6 +320,58 @@ export class FeatureFlagFacade {
         },
         tx,
       );
+    });
+  }
+
+  /** One page of a flag's audit history, newest version first. */
+  async flagHistory(
+    actor: TokenSubject,
+    key: string,
+    page: HistoryPage,
+  ): Promise<AuditPage> {
+    const companyId = this.flags.resolveCompany(
+      this.auth.tenantScope(actor),
+      page.companyId,
+    );
+    const flag = await this.flags.findByKey(companyId, key);
+    return this.audit.history(
+      { companyId, entityType: 'FLAG', entityId: flag.id },
+      page.limit,
+      page.offset,
+    );
+  }
+
+  /** Restores the flag's state at toVersion as a new version (409 if stale) and audits it as ROLLBACK. */
+  async rollbackFlag(
+    actor: TokenSubject,
+    key: string,
+    toVersion: number,
+    expectedVersion: number,
+  ): Promise<FeatureFlag> {
+    const companyId = this.flags.resolveCompany(this.auth.tenantScope(actor));
+    const flag = await this.flags.findByKey(companyId, key);
+    this.flags.assertCanRollBack(flag, toVersion);
+    return this.transactions.run(async (tx) => {
+      const old = await this.audit.stateAt(
+        { companyId, entityType: 'FLAG', entityId: flag.id },
+        toVersion,
+        tx,
+      );
+      const restored = await this.flags.restore(flag, expectedVersion, old, tx);
+      await this.audit.record(
+        {
+          companyId,
+          userId: actor.userId,
+          entityType: 'FLAG',
+          entityId: flag.id,
+          version: restored.version,
+          action: 'ROLLBACK',
+          before: this.flags.snapshot(flag),
+          after: this.flags.snapshot(restored),
+        },
+        tx,
+      );
+      return restored;
     });
   }
 
