@@ -88,7 +88,7 @@ export async function resetDatabase(app: INestApplication): Promise<void> {
     throw new Error(`Refusing to reset "${database}": not a test database`);
   }
   await dataSource.query(
-    'TRUNCATE refresh_token, user_role, app_user, company RESTART IDENTITY',
+    'TRUNCATE audit_event, feature_flag, refresh_token, user_role, app_user, company RESTART IDENTITY',
   );
   await app.get(FeatureFlagFacade).ensurePlatformAdmin(ADMIN);
 }

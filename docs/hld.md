@@ -186,7 +186,7 @@ Each app is built and deployed separately; the shell loads them at runtime (Modu
 
 | Milestone | Scope | Status |
 | --- | --- | --- |
-| 1 | NestJS + Postgres: companies, users, roles, auth (JWT), tenant scoping, flags, rules, config, versioning, audit, rollback, 409 | In progress: companies, users, roles, seed admin done; auth in progress |
+| 1 | NestJS + Postgres: companies, users, roles, auth (JWT), tenant scoping, flags, rules, config, versioning, audit, rollback, 409 | In progress: companies, users, roles, seed admin, auth (JWT + refresh tokens), tenant scoping, flags with versioning, 409, audit, history and rollback done; next API keys + SDK read path, then config |
 | 2 | Redis cache + pub/sub, WebSocket delivery, SDK package, demo app reacting live | Planned |
 | 3 | Console: React shell, React flags app, Angular settings app | Planned |
 | 4 | Docker images, GitHub Actions CI, demo deploy | Planned |
