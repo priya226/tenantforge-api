@@ -148,7 +148,7 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |
-| `POST` | `/flags` | `{ "key": string, "description"?: string, "enabled"?: bool, "rolloutType"?: "PERCENT" \| "COUNT", "rolloutValue"?: n, "rules"?: [{ "attribute", "value", "percent" }] }` | `201` with the flag at `version` 1. Defaults: off, `PERCENT` 100, no rules. `409` if the key exists in your company |
+| `POST` | `/flags` | `{ "key": string, "description"?: string, "enabled"?: bool, "rolloutType"?: "PERCENT" \| "COUNT", "rolloutValue"?: n, "rules"?: [{ "attribute", "value", "rolloutType", "rolloutValue" }] }` | `201` with the flag at `version` 1. Defaults: off, `PERCENT` 100, no rules. `409` if the key exists in your company |
 | `GET` | `/flags?companyId=` | | `200` with the company's flags, sorted by key |
 | `GET` | `/flags/:key?companyId=` | | `200` with the flag, or `404` |
 | `PUT` | `/flags/:key` | `{ "expectedVersion": n, "description"?: string \| null, "enabled": bool, "rolloutType": "PERCENT" \| "COUNT", "rolloutValue": n, "rules": [...] }` | `200` with the flag at `version` n+1. **Replaces** the whole state. `409` "changed by someone else" if the flag is no longer at `expectedVersion` |
@@ -156,10 +156,10 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 
 - **Who:** `COMPANY_ADMIN` creates, edits and deletes flags of their own company. `VIEWER` reads them. `PLATFORM_ADMIN` reads any company's flags with `?companyId=` (required for them) but can't change them. Another company's flag or `companyId` returns `404`.
 - **Key:** 2–64 characters, lowercase letters, digits and dashes, starting with a letter. It identifies the flag in URLs and SDKs, so it can't be changed (sending `key` in `PUT` returns `400`).
-- **Rollout:** the admin picks one of two modes.
+- **Rollout:** the flag and each of its rules pick one of two modes.
   - `PERCENT`: `rolloutValue` 0–100. That share of users gets the flag, decided by hashing the user id, so the same user always gets the same answer.
   - `COUNT`: `rolloutValue` 1–10,000. Only the first that many users get the flag (first come, first served). The server hands out these places; the SDK claim endpoint comes with the SDK work.
-- **Rules** (`PERCENT` only; with `COUNT` they return `400`): a list of `{ attribute, value, percent }` (at most 50). A user whose `attribute` equals `value` gets that rule's `percent`; everyone else gets `rolloutValue` %. Two rules for the same attribute and value return `400`.
+- **Rules:** a list of `{ attribute, value, rolloutType, rolloutValue }` (at most 50). A user whose `attribute` equals `value` gets **that rule's** rollout, which can be `PERCENT` or `COUNT` on its own (e.g. region `IN` → first 10 users, region `US` → 30%). The first matching rule wins; everyone who matches no rule gets the flag's own `rolloutType` / `rolloutValue`. COUNT places are counted per rule, identified by its attribute and value. Two rules for the same attribute and value return `400`.
 - **Optimistic locking:** every change sets `version` to the next number. A client sends the version it last read. The update runs as `UPDATE … WHERE version = expected`, so when two admins save the same version, exactly one wins and the other gets `409`.
 - **Audit:** every create, update and delete writes an `audit_event` row in the same transaction, with full before/after snapshots and who made the change. If the change fails, no audit row is written. History and rollback endpoints come next.
 - Deleting a company soft-deletes its flags too.

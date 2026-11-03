@@ -59,10 +59,11 @@ refresh_token(user_id → app_user, family_id, token_hash CHAR(64),          -- 
 feature_flag(company_id → company, key VARCHAR(64), description, enabled,   -- V5
              rollout_type ('PERCENT' | 'COUNT'), rollout_value INT,
              rules JSONB array, version INT ≥ 1)
-    -- CHECK: PERCENT value 0–100, COUNT value 1–10000; COUNT flags have no rules
-    -- CHECK: at most 50 rules, each {attribute: text, value: text, percent: whole number 0–100}
+    -- CHECK: PERCENT value 0–100, COUNT value 1–10000
+    -- CHECK: at most 50 rules, each {attribute, value, rolloutType, rolloutValue} with the same ranges
+    -- the flag's rollout covers users who match no rule; COUNT places are per (attribute, value)
     -- UNIQUE (company_id, key) WHERE is_deleted = false
-    -- key CHECK ^[a-z][a-z0-9-]{1,63}$; rules e.g. [{"attribute":"region","value":"IN","percent":20}]
+    -- key CHECK ^[a-z][a-z0-9-]{1,63}$; rules e.g. [{"attribute":"region","value":"IN","rolloutType":"COUNT","rolloutValue":10}]
 
 audit_event(company_id → company, user_id → app_user,                     -- V5
             entity_type ('FLAG' | 'SETTING'), entity_id, version INT,
@@ -214,5 +215,5 @@ WHERE id = $2 AND company_id = $3 AND version = $expectedVersion AND is_deleted 
 | Flag writes are company-admin only; a platform admin can read any company's flags but not change them. | Platform admin edits (support access without an audit trail of who in the company changed what). |
 | `DELETE /flags/{key}` also requires `expectedVersion`. | Deleting whatever version is current (could delete a change the admin never saw). |
 | A company delete soft-deletes its flags without audit rows. | One DELETE audit row per flag (history of a deleted company is not used). |
-| Two rollout modes: `PERCENT` (hash of user id, evaluated in the SDK) and `COUNT` (first N users; the server hands out places). Rules only with `PERCENT`. | Explicit user-id lists only (admin must pick people); approximating N users as a tiny percent (not exact). |
+| Two rollout modes: `PERCENT` (hash of user id, evaluated in the SDK) and `COUNT` (first N users; the server hands out places). Each rule has its own rollout (PERCENT or COUNT); the flag's rollout covers users who match no rule. COUNT places are counted per rule, keyed by its (attribute, value). | Explicit user-id lists only (admin must pick people); approximating N users as a tiny percent (not exact). |
 | Rules are a JSONB array on the flag, with a database CHECK (JSON path) on each rule's shape. A table is used only for things with their own identity or that are counted/locked on their own (`user_role`, COUNT places). | A `feature_flag_rule` table: rules are only ever read and written with their flag, so a table adds joins, diffs on save and row rebuilds on rollback. |

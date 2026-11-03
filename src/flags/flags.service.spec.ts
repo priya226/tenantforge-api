@@ -7,7 +7,7 @@ import {
 import { UniqueViolationError } from '../common/unique-violation.error.js';
 import { FeatureFlag } from './feature-flag.entity.js';
 import { FeatureFlagRepository } from './feature-flag.repository.js';
-import { FlagsService } from './flags.service.js';
+import { type FlagState, FlagsService } from './flags.service.js';
 
 const COMPANY_ID = '3f2b9c1e-8d4a-4c1b-9e2f-0a1b2c3d4e5f';
 const OTHER_ID = '9d8c7b6a-5f4e-4d3c-8b2a-1f0e9d8c7b6a';
@@ -15,12 +15,19 @@ const TX = 'tx' as never;
 const COMPANY = { kind: 'company' as const, companyId: COMPANY_ID };
 const ALL = { kind: 'all' as const };
 
-const state = {
+const state: FlagState = {
   description: null,
   enabled: true,
   rolloutType: 'PERCENT' as const,
   rolloutValue: 50,
-  rules: [{ attribute: 'region', value: 'IN', percent: 20 }],
+  rules: [
+    {
+      attribute: 'region',
+      value: 'IN',
+      rolloutType: 'PERCENT',
+      rolloutValue: 20,
+    },
+  ],
 };
 
 function makeFlag(overrides: Partial<FeatureFlag> = {}): FeatureFlag {
@@ -90,7 +97,14 @@ describe('FlagsService', () => {
         {
           key: 'new-checkout',
           description: '  ',
-          rules: [{ attribute: ' region ', value: ' IN ', percent: 20 }],
+          rules: [
+            {
+              attribute: ' region ',
+              value: ' IN ',
+              rolloutType: 'PERCENT',
+              rolloutValue: 20,
+            },
+          ],
         },
         TX,
       );
@@ -103,7 +117,14 @@ describe('FlagsService', () => {
         enabled: false,
         rolloutType: 'PERCENT',
         rolloutValue: 100,
-        rules: [{ attribute: 'region', value: 'IN', percent: 20 }],
+        rules: [
+          {
+            attribute: 'region',
+            value: 'IN',
+            rolloutType: 'PERCENT',
+            rolloutValue: 20,
+          },
+        ],
       });
     });
 
@@ -142,8 +163,18 @@ describe('FlagsService', () => {
           {
             key: 'ok-key',
             rules: [
-              { attribute: 'region', value: 'IN', percent: 1 },
-              { attribute: 'region', value: 'IN', percent: 2 },
+              {
+                attribute: 'region',
+                value: 'IN',
+                rolloutType: 'PERCENT',
+                rolloutValue: 1,
+              },
+              {
+                attribute: 'region',
+                value: 'IN',
+                rolloutType: 'PERCENT',
+                rolloutValue: 2,
+              },
             ],
           },
           TX,
@@ -162,7 +193,41 @@ describe('FlagsService', () => {
       expect(flag).toMatchObject({ rolloutType: 'COUNT', rolloutValue: 10 });
     });
 
-    it('rejects a COUNT of 0 or over 10000, and rules on a COUNT rollout, with 400', async () => {
+    it('lets each rule pick its own rollout, also on a COUNT flag', async () => {
+      const rules = [
+        {
+          attribute: 'region',
+          value: 'IN',
+          rolloutType: 'COUNT' as const,
+          rolloutValue: 10,
+        },
+        {
+          attribute: 'region',
+          value: 'US',
+          rolloutType: 'PERCENT' as const,
+          rolloutValue: 30,
+        },
+      ];
+
+      const flag = await service.create(
+        COMPANY_ID,
+        { key: 'beta-search', rolloutType: 'COUNT', rolloutValue: 5, rules },
+        TX,
+      );
+
+      expect(flag.rules).toEqual(rules);
+    });
+
+    it('rejects a rollout value outside its type range, on the flag or a rule, with 400', async () => {
+      const rule = (
+        rolloutType: 'PERCENT' | 'COUNT',
+        rolloutValue: number,
+      ) => ({
+        key: 'beta-search',
+        rules: [
+          { attribute: 'region', value: 'IN', rolloutType, rolloutValue },
+        ],
+      });
       const bad = [
         { key: 'beta-search', rolloutType: 'COUNT' as const, rolloutValue: 0 },
         {
@@ -170,16 +235,21 @@ describe('FlagsService', () => {
           rolloutType: 'COUNT' as const,
           rolloutValue: 10_001,
         },
+        { key: 'beta-search', rolloutType: 'FIRST' as never, rolloutValue: 10 },
+        rule('COUNT', 0),
+        rule('COUNT', 10_001),
+        rule('PERCENT', 101),
+        rule('PERCENT', 12.5),
         {
           key: 'beta-search',
-          rolloutType: 'COUNT' as const,
-          rolloutValue: 10,
-          rules: [{ attribute: 'region', value: 'IN', percent: 20 }],
-        },
-        {
-          key: 'beta-search',
-          rolloutType: 'FIRST' as never,
-          rolloutValue: 10,
+          rules: [
+            {
+              attribute: 'region',
+              value: 'IN',
+              rolloutType: 'FIRST' as never,
+              rolloutValue: 1,
+            },
+          ],
         },
       ];
       for (const input of bad) {

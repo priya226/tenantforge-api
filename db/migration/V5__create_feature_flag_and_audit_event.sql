@@ -1,6 +1,7 @@
 -- Feature flags. Each flag belongs to one company and is identified by its key inside that company.
 -- version starts at 1 and goes up by one on every change; an update must send the version it read.
 -- Rollout: PERCENT gives the flag to rollout_value % of users; COUNT gives it to the first rollout_value users.
+-- Each rule has its own rollout; the flag's rollout applies to users who match no rule.
 CREATE TABLE feature_flag (
     id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     company_id    UUID        NOT NULL REFERENCES company (id),
@@ -23,13 +24,14 @@ CREATE TABLE feature_flag (
     CONSTRAINT ck_feature_flag_rules_array CHECK (
         jsonb_typeof(rules) = 'array' AND jsonb_array_length(rules) <= 50
     ),
-    -- Every rule is {"attribute": non-empty text, "value": non-empty text, "percent": whole number 0-100}.
+    -- Every rule is {"attribute": non-empty text, "value": non-empty text, "rolloutType", "rolloutValue"},
+    -- with the same rollout ranges as the flag itself.
     CONSTRAINT ck_feature_flag_rules_shape CHECK (NOT jsonb_path_exists(rules,
         '$[*] ? (!exists(@.attribute ? (@.type() == "string" && @ != ""))
               || !exists(@.value ? (@.type() == "string" && @ != ""))
-              || !exists(@.percent ? (@.type() == "number" && @ >= 0 && @ <= 100 && @ == @.floor())))')),
-    -- Attribute rules only apply to PERCENT rollouts.
-    CONSTRAINT ck_feature_flag_count_without_rules CHECK (rollout_type = 'PERCENT' OR rules = '[]'),
+              || !exists(@ ? (@.rolloutValue.type() == "number" && @.rolloutValue == @.rolloutValue.floor()
+                    && ((@.rolloutType == "PERCENT" && @.rolloutValue >= 0 && @.rolloutValue <= 100)
+                     || (@.rolloutType == "COUNT" && @.rolloutValue >= 1 && @.rolloutValue <= 10000)))))')),
     CONSTRAINT ck_feature_flag_version CHECK (version >= 1)
 );
 

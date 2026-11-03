@@ -19,7 +19,12 @@ interface Flag {
   enabled: boolean;
   rolloutType: string;
   rolloutValue: number;
-  rules: { attribute: string; value: string; percent: number }[];
+  rules: {
+    attribute: string;
+    value: string;
+    rolloutType: string;
+    rolloutValue: number;
+  }[];
   version: number;
   description: string | null;
 }
@@ -37,7 +42,14 @@ const state = (enabled: boolean, expectedVersion: number) => ({
   enabled,
   rolloutType: 'PERCENT',
   rolloutValue: 100,
-  rules: [{ attribute: 'region', value: 'IN', percent: 20 }],
+  rules: [
+    {
+      attribute: 'region',
+      value: 'IN',
+      rolloutType: 'PERCENT',
+      rolloutValue: 20,
+    },
+  ],
 });
 
 describe('Flags (e2e)', () => {
@@ -87,7 +99,14 @@ describe('Flags (e2e)', () => {
   describe('POST /flags', () => {
     it('creates a flag at version 1 with defaults and a CREATE audit row', async () => {
       const flag = await createFlag('new-checkout', {
-        rules: [{ attribute: 'region', value: 'IN', percent: 20 }],
+        rules: [
+          {
+            attribute: 'region',
+            value: 'IN',
+            rolloutType: 'PERCENT',
+            rolloutValue: 20,
+          },
+        ],
       });
 
       expect(flag).toMatchObject({
@@ -97,7 +116,14 @@ describe('Flags (e2e)', () => {
         rolloutValue: 100,
         version: 1,
         description: null,
-        rules: [{ attribute: 'region', value: 'IN', percent: 20 }],
+        rules: [
+          {
+            attribute: 'region',
+            value: 'IN',
+            rolloutType: 'PERCENT',
+            rolloutValue: 20,
+          },
+        ],
       });
       const rows = await auditRows(flag.id);
       expect(rows).toHaveLength(1);
@@ -117,6 +143,31 @@ describe('Flags (e2e)', () => {
       });
 
       expect(flag).toMatchObject({ rolloutType: 'COUNT', rolloutValue: 10 });
+    });
+
+    it('lets each rule pick PERCENT or COUNT', async () => {
+      const rules = [
+        {
+          attribute: 'region',
+          value: 'IN',
+          rolloutType: 'COUNT',
+          rolloutValue: 10,
+        },
+        {
+          attribute: 'region',
+          value: 'US',
+          rolloutType: 'PERCENT',
+          rolloutValue: 30,
+        },
+      ];
+
+      const flag = await createFlag('regional-launch', {
+        rules,
+        rolloutType: 'PERCENT',
+        rolloutValue: 0,
+      });
+
+      expect(flag.rules).toEqual(rules);
     });
 
     it('returns 409 for a duplicate key in the same company, but allows it in another', async () => {
@@ -145,21 +196,59 @@ describe('Flags (e2e)', () => {
         { key: 'ok-key', rolloutType: 'FIRST', rolloutValue: 5 },
         {
           key: 'ok-key',
-          rolloutType: 'COUNT',
-          rolloutValue: 10,
-          rules: [{ attribute: 'region', value: 'IN', percent: 20 }],
+          rules: [
+            {
+              attribute: 'region',
+              value: 'IN',
+              rolloutType: 'COUNT',
+              rolloutValue: 0,
+            },
+          ],
         },
-        { key: 'ok-key', rules: [{ attribute: 'region', percent: 10 }] },
         {
           key: 'ok-key',
-          rules: [{ attribute: 'r', value: 'v', percent: 1.5 }],
+          rules: [
+            {
+              attribute: 'region',
+              value: 'IN',
+              rolloutType: 'PERCENT',
+              rolloutValue: 101,
+            },
+          ],
+        },
+        {
+          key: 'ok-key',
+          rules: [
+            { attribute: 'region', rolloutType: 'PERCENT', rolloutValue: 10 },
+          ],
+        },
+        {
+          key: 'ok-key',
+          rules: [
+            {
+              attribute: 'r',
+              value: 'v',
+              rolloutType: 'PERCENT',
+              rolloutValue: 1.5,
+            },
+          ],
         },
         { key: 'ok-key', version: 7 },
         {
           key: 'ok-key',
           rules: [
-            { attribute: 'region', value: 'IN', percent: 1 },
-            { attribute: 'region', value: 'IN', percent: 2 },
+            {
+              attribute: 'region',
+              value: 'IN',
+              rolloutType: 'PERCENT',
+              rolloutValue: 1,
+            },
+            {
+              attribute: 'region',
+              value: 'IN',
+              rolloutType: 'PERCENT',
+              rolloutValue: 2,
+            },
           ],
         },
       ];
@@ -243,7 +332,14 @@ describe('Flags (e2e)', () => {
         version: 2,
         enabled: true,
         description: 'New checkout page',
-        rules: [{ attribute: 'region', value: 'IN', percent: 20 }],
+        rules: [
+          {
+            attribute: 'region',
+            value: 'IN',
+            rolloutType: 'PERCENT',
+            rolloutValue: 20,
+          },
+        ],
       });
       const rows = await auditRows(flag.id);
       expect(rows.map((r) => [r.action, r.version])).toEqual([
