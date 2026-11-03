@@ -48,6 +48,17 @@ export abstract class BaseRepository<T extends BaseEntity> {
     });
   }
 
+  /** Like find(), plus the total count of matching rows; hides soft-deleted rows. */
+  findAndCount(
+    options: FindManyOptions<T> = {},
+    scope: ScopeOptions = {},
+  ): Promise<[T[], number]> {
+    return this.repo.findAndCount({
+      ...options,
+      where: this.scopeWhere(options.where, scope),
+    });
+  }
+
   findOne(
     options: FindOneOptions<T>,
     scope: ScopeOptions = {},

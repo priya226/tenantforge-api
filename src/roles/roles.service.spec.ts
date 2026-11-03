@@ -54,6 +54,7 @@ describe('RolesService', () => {
   };
   const userRoles = {
     findByUser: vi.fn(),
+    findByUsers: vi.fn(),
     create: vi.fn((data: Partial<UserRole>) =>
       Object.assign(new UserRole(), data),
     ),
@@ -81,6 +82,60 @@ describe('RolesService', () => {
       ],
     }).compile();
     service = moduleRef.get(RolesService);
+  });
+
+  describe('assertNotLastAdmin (deleting a user)', () => {
+    const OTHER = 'other-user';
+    const TXN = 'tx' as never;
+
+    it('allows deleting a user who is not an admin', async () => {
+      userRoles.countUsersWithRole.mockResolvedValueOnce(0);
+
+      await service.assertNotLastAdmin(companyUser, [USER_ID, OTHER], TXN);
+
+      expect(userRoles.countUsersWithRole).toHaveBeenCalledOnce();
+      expect(userRoles.countUsersWithRole).toHaveBeenCalledWith(
+        'COMPANY_ADMIN',
+        [USER_ID],
+      );
+    });
+
+    it('allows deleting an admin when another admin remains', async () => {
+      userRoles.countUsersWithRole
+        .mockResolvedValueOnce(1)
+        .mockResolvedValueOnce(1);
+
+      await service.assertNotLastAdmin(companyUser, [USER_ID, OTHER], TXN);
+
+      expect(userRoles.countUsersWithRole).toHaveBeenLastCalledWith(
+        'COMPANY_ADMIN',
+        [OTHER],
+      );
+    });
+
+    it('rejects deleting the last company admin with 409', async () => {
+      userRoles.countUsersWithRole
+        .mockResolvedValueOnce(1)
+        .mockResolvedValueOnce(0);
+
+      await expect(
+        service.assertNotLastAdmin(companyUser, [USER_ID, OTHER], TXN),
+      ).rejects.toThrow('Company must keep at least one admin');
+    });
+
+    it('checks PLATFORM_ADMIN for a user without a company', async () => {
+      userRoles.countUsersWithRole
+        .mockResolvedValueOnce(1)
+        .mockResolvedValueOnce(0);
+
+      await expect(
+        service.assertNotLastAdmin(platformUser, [USER_ID], TXN),
+      ).rejects.toThrow('The platform must keep at least one platform admin');
+      expect(userRoles.countUsersWithRole).toHaveBeenCalledWith(
+        'PLATFORM_ADMIN',
+        [USER_ID],
+      );
+    });
   });
 
   describe('last company admin', () => {
@@ -127,6 +182,24 @@ describe('RolesService', () => {
         [USER_ID],
       );
       expect(userRoles.countUsersWithRole).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getRolesForUsers', () => {
+    it('groups roles per user in one query, sorted, with [] for users without roles', async () => {
+      userRoles.findByUsers.mockResolvedValue([
+        Object.assign(mapping('VIEWER'), { userId: 'u1' }),
+        Object.assign(mapping('COMPANY_ADMIN'), { userId: 'u1' }),
+        Object.assign(mapping('VIEWER'), { userId: 'u2' }),
+      ]);
+
+      const result = await service.getRolesForUsers(['u1', 'u2', 'u3']);
+
+      expect(userRoles.findByUsers).toHaveBeenCalledOnce();
+      expect(userRoles.findByUsers).toHaveBeenCalledWith(['u1', 'u2', 'u3']);
+      expect(result.get('u1')).toEqual(['COMPANY_ADMIN', 'VIEWER']);
+      expect(result.get('u2')).toEqual(['VIEWER']);
+      expect(result.get('u3')).toEqual([]);
     });
   });
 

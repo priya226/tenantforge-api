@@ -17,6 +17,7 @@ import type { RoleName } from '../roles/role-name.js';
 import { Role } from '../roles/role.entity.js';
 import { RolesService } from '../roles/roles.service.js';
 import { User } from '../users/user.entity.js';
+import type { UserSearch } from '../users/user-search.js';
 import { type NewUser, UsersService } from '../users/users.service.js';
 
 export interface CreateUserRequest {
@@ -28,6 +29,11 @@ export interface CreateUserRequest {
 }
 
 export type UserWithRoles = User & { roles: RoleName[] };
+
+export interface UserListPage {
+  items: UserWithRoles[];
+  total: number;
+}
 
 @Injectable()
 export class FeatureFlagFacade {
@@ -125,9 +131,56 @@ export class FeatureFlagFacade {
     return this.roles.listRoles();
   }
 
+  /** One page of users in the caller's scope, each with its roles. */
+  async listUsers(
+    actor: TokenSubject,
+    input: UserSearch,
+  ): Promise<UserListPage> {
+    const page = await this.users.search(this.auth.tenantScope(actor), input);
+    const rolesByUser = await this.roles.getRolesForUsers(
+      page.items.map((u) => u.id),
+    );
+    return {
+      items: page.items.map((u) =>
+        Object.assign(u, { roles: rolesByUser.get(u.id) ?? [] }),
+      ),
+      total: page.total,
+    };
+  }
+
   async findUser(actor: TokenSubject, id: string): Promise<UserWithRoles> {
     const user = await this.users.findOne(id, this.auth.tenantScope(actor));
     return Object.assign(user, { roles: await this.roles.getUserRoles(id) });
+  }
+
+  /** Renames a user in the caller's scope; returns it with its roles. */
+  async renameUser(
+    actor: TokenSubject,
+    id: string,
+    name: string,
+  ): Promise<UserWithRoles> {
+    const user = await this.users.rename(
+      id,
+      this.auth.tenantScope(actor),
+      name,
+    );
+    return Object.assign(user, { roles: await this.roles.getUserRoles(id) });
+  }
+
+  /** Deletes a user in the caller's scope with its roles and sessions; keeps the last admin. */
+  async removeUser(actor: TokenSubject, id: string): Promise<void> {
+    const user = await this.users.findOne(id, this.auth.tenantScope(actor));
+    this.users.assertCanDelete(actor.userId, user);
+    await this.transactions.run(async (tx) => {
+      if (user.companyId) {
+        await this.companies.lockForUpdate(user.companyId, tx);
+      }
+      const peerIds = await this.users.findIdsInCompany(user.companyId, tx);
+      await this.roles.assertNotLastAdmin(user, peerIds, tx);
+      await this.users.remove(user, tx);
+      await this.roles.removeAllRolesForUsers([user.id], tx);
+      await this.auth.revokeAllForUser(user.id, tx);
+    });
   }
 
   async getUserRoles(actor: TokenSubject, id: string): Promise<RoleName[]> {

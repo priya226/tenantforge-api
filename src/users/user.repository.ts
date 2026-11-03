@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { type FindOptionsWhere, ILike, In, IsNull, Repository } from 'typeorm';
 
 import { BaseRepository } from '../common/base.repository.js';
+import type { UserSearch } from './user-search.js';
 import { User } from './user.entity.js';
 
 @Injectable()
@@ -24,15 +25,39 @@ export class UserRepository extends BaseRepository<User> {
       .getOne();
   }
 
+  /** Page of users matching q in email or name (case-insensitive), newest first, with the total count. */
+  search(input: UserSearch): Promise<[User[], number]> {
+    const base: FindOptionsWhere<User> =
+      input.companyId === undefined ? {} : { companyId: input.companyId };
+    const where = input.q
+      ? [
+          { ...base, email: ILike(`%${escapeLike(input.q)}%`) },
+          { ...base, name: ILike(`%${escapeLike(input.q)}%`) },
+        ]
+      : base;
+    return this.findAndCount({
+      where,
+      order: { createdAt: 'DESC', id: 'DESC' },
+      take: input.limit,
+      skip: input.offset,
+    });
+  }
+
   countByIds(ids: string[]): Promise<number> {
     return this.count({ id: In(ids) });
   }
 
-  async findIdsByCompany(companyId: string): Promise<string[]> {
+  /** Ids of active users in a company, or of all platform users when companyId is null. */
+  async findIdsByCompany(companyId: string | null): Promise<string[]> {
     const users = await this.find({
-      where: { companyId },
+      where: { companyId: companyId ?? IsNull() },
       select: { id: true },
     });
     return users.map((u) => u.id);
   }
+}
+
+// so a search for "50%" or "a_b" matches those characters literally
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (c) => '\\' + c);
 }

@@ -118,8 +118,11 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |
 | `POST` | `/users` | `{ "companyId": uuid, "name": string, "email": string, "password": string, "roles"?: string[] }` | `201` with the created user and its `roles` (never includes the password hash) |
+| `GET` | `/users?q=&companyId=&limit=&offset=` | | `200` `{ "items": [user with `roles`], "total": n }`. Newest first. See the notes below |
 | `GET` | `/users/me` | | `200` with the caller's own user and `roles`. **Any logged-in user**, including `VIEWER`. `404` if the account was deleted after login |
 | `GET` | `/users/:id` | | `200` with the user and its `roles`, or `404` |
+| `PATCH` | `/users/:id` | `{ "name": string }` | `200` with the updated user and `roles`. Only the name can change; any other field (e.g. `email`) gets `400`. `404` for a user outside your company |
+| `DELETE` | `/users/:id` | | `204`. Soft-deletes the user and their role mappings and **ends all their sessions** (refresh tokens revoked), in one transaction. `409` if they are the last company admin (or the last platform admin). `400` for your own account. `404` outside your company. The email can be reused afterwards |
 | `GET` | `/users/:id/roles` | | `200` `{ "roles": [...] }`, or `404` |
 | `PUT` | `/users/:id/roles` | `{ "roles": string[] }` | `200` `{ "roles": [...] }`. **Replaces** the whole set: removed roles are soft-deleted, new ones added |
 
@@ -133,6 +136,12 @@ Data is stored in the `pgdata` Docker volume, so it survives `docker compose dow
 - `email` is trimmed and lowercased before saving. It must be unique among users that are not deleted, so a duplicate returns `409`.
 - `password` must be 12–128 characters, with no rules about symbols or digits, and it is not trimmed. It is stored only as an argon2id hash in `password_hash`. That column is `select: false`, so normal queries never load it.
 - Requires a `COMPANY_ADMIN` or `PLATFORM_ADMIN` token (`403` otherwise), except `GET /users/me`.
+- `GET /users` lists users page by page:
+  - A company admin always sees only their own company. A platform admin sees everyone, or one company with `?companyId=`. A company admin passing another company's id gets `404`.
+  - `q` matches anywhere in the email or the name, ignoring case. `%` and `_` are matched literally.
+  - `limit` 1–100 (default 20), `offset` ≥ 0 (default 0). `total` is the number of matches across all pages.
+  - Sorted newest first, ties broken by id, so pages never repeat or skip a user.
+  - Each user's `roles` are loaded for the whole page in one query.
 - A company admin works only inside their own company: another company's user (or company id in `POST /users`) returns `404`, as if it didn't exist. A platform admin works in every company.
 
 ### Roles
@@ -217,7 +226,7 @@ src/
 │  │  ├─ dto/                     Request bodies with validation rules
 │  │  └─ companies.controller.ts  HTTP routes
 │  ├─ users/
-│  │  ├─ dto/                 Bodies of POST /users and PUT /users/:id/roles
+│  │  ├─ dto/                 Bodies of POST /users and PUT /users/:id/roles; query of GET /users
 │  │  └─ users.controller.ts  HTTP routes
 │  └─ roles/
 │     └─ roles.controller.ts  GET /roles
@@ -232,7 +241,8 @@ src/
 │  └─ company.entity.ts   The company table
 ├─ users/                  Feature module, no controller
 │  ├─ users.service.ts     Users only: create (duplicate email, argon2 hash), soft delete by company, verifyCredentials for login
-│  ├─ user.repository.ts   All database calls for users; findForLogin is the only query that loads the hash
+│  ├─ user.repository.ts   All database calls for users; findForLogin is the only query that loads the hash; search (ILIKE, paging)
+│  ├─ user-search.ts       UserSearch: the list filters (companyId, q, limit, offset)
 │  ├─ users.module.ts
 │  ├─ user.entity.ts       The app_user table ("user" is a reserved word in Postgres)
 │  ├─ normalize-email.ts   Trim + lowercase, used wherever an email is stored or looked up
@@ -262,6 +272,7 @@ db/
 test/
 ├─ e2e-app.ts             Starts the app for e2e tests, resets the test database, logs in
 ├─ auth.e2e-spec.ts       Login, 401/403, tenant scope (404), /users/me, refresh rotation, reuse, logout
+├─ users.e2e-spec.ts      GET /users: scope, company filter, search, paging, 400s
 └─ app.e2e-spec.ts        GET / is public
 ```
 
@@ -327,10 +338,16 @@ The schema is changed only through Flyway migrations in `db/migration/`. TypeORM
 - The facade passes that scope to the services, and the services put it into the query (`WHERE id = ? AND company_id = ?`). A row in another company is simply not found, so the answer is `404`, not `403`: the API doesn't reveal that it exists.
 - Every new company-owned feature (flags, settings, audit) takes a `TenantScope` the same way.
 
+**Deleting a user**
+- `FeatureFlagFacade.removeUser` runs in one transaction: lock the company row (`FOR UPDATE`, the same lock as role changes), load the company's active user ids, `RolesService.assertNotLastAdmin` (409), then soft-delete the user, their role mappings and revoke their refresh tokens.
+- The lock makes simultaneous deletes in one company run one after another. Without it, deleting every admin at once could leave the company with none (an e2e test fires 6 deletes at once and expects exactly one 409).
+- An access token issued before the delete keeps working for at most 15 minutes, but every lookup ignores deleted users (`/users/me` → 404) and refresh fails.
+- Platform users aren't locked; a race could only remove both of two platform admins deleting each other at once, and `npm run seed:admin` recreates one.
+
 **Deleting a company**
 - `FeatureFlagFacade.removeCompany` soft-deletes the company, its users and their role mappings in one transaction.
 - When a new feature owns company data (flags, API keys, settings), its cleanup step is added there.
 
 ## Project status
 
-Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. Working end to end: the companies API (CRUD with soft delete), the users API (one company per user, argon2-hashed passwords), roles (a user can hold several; managed through `/users/:id/roles`; `GET /roles`; a company always keeps at least one admin), and `seed:admin` for the first platform admin. Authentication: login, refresh (rotating refresh tokens with reuse detection) and logout, with a global JWT guard and role checks on every route. Tenant scoping: company admins only see and change users of their own company. `GET /users/me` for every logged-in user. Next: the rest of the users API, then flags and config with versioning, optimistic locking (409), audit and rollback. See the [roadmap](docs/hld.md#11-roadmap).
+Milestone 1 is in progress. The NestJS project is set up and connected to a local PostgreSQL database through TypeORM, with Flyway managing the schema. Working end to end: the companies API (CRUD with soft delete), the users API (one company per user, argon2-hashed passwords), roles (a user can hold several; managed through `/users/:id/roles`; `GET /roles`; a company always keeps at least one admin), and `seed:admin` for the first platform admin. Authentication: login, refresh (rotating refresh tokens with reuse detection) and logout, with a global JWT guard and role checks on every route. Tenant scoping: company admins only see and change users of their own company. The users API: list with search and paging, rename, delete (sessions revoked, last admin kept), and `GET /users/me`. Next: the rest of the users API, then flags and config with versioning, optimistic locking (409), audit and rollback. See the [roadmap](docs/hld.md#11-roadmap).

@@ -28,6 +28,15 @@ export class RefreshTokenRepository extends BaseRepository<RefreshToken> {
     return (result.affected ?? 0) === 1;
   }
 
+  /** Revokes every active token of the user (all sessions); returns how many. */
+  async revokeByUser(userId: string, at: Date): Promise<number> {
+    const result = await this.repo.update(
+      { userId, revokedAt: IsNull(), isDeleted: false },
+      { revokedAt: at },
+    );
+    return result.affected ?? 0;
+  }
+
   async revokeFamily(familyId: string, at: Date): Promise<number> {
     const result = await this.repo.update(
       { familyId, revokedAt: IsNull(), isDeleted: false },

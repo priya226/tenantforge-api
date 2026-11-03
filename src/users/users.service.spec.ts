@@ -53,6 +53,7 @@ describe('UsersService', () => {
     save: vi.fn((user: User) => Promise.resolve(user)),
     withTransaction: vi.fn(),
     countByIds: vi.fn(),
+    search: vi.fn(),
   };
 
   beforeEach(async () => {
@@ -86,6 +87,106 @@ describe('UsersService', () => {
         id: USER_ID,
         companyId: 'c-1',
       });
+    });
+  });
+
+  describe('search', () => {
+    const page = { limit: 20, offset: 0 };
+    const found = makeUser();
+
+    beforeEach(() => {
+      repo.search.mockResolvedValue([[found], 1]);
+    });
+
+    it('limits a company scope to that company even without a filter', async () => {
+      const result = await service.search(
+        { kind: 'company', companyId: COMPANY_ID },
+        page,
+      );
+
+      expect(repo.search).toHaveBeenCalledWith({
+        ...page,
+        companyId: COMPANY_ID,
+      });
+      expect(result).toEqual({ items: [found], total: 1 });
+    });
+
+    it('lets the platform scope list every company', async () => {
+      await service.search({ kind: 'all' }, { ...page, q: 'pri' });
+
+      expect(repo.search).toHaveBeenCalledWith({
+        ...page,
+        q: 'pri',
+        companyId: undefined,
+      });
+    });
+
+    it('lets the platform scope filter by any company', async () => {
+      await service.search({ kind: 'all' }, { ...page, companyId: 'c-2' });
+
+      expect(repo.search).toHaveBeenCalledWith({ ...page, companyId: 'c-2' });
+    });
+
+    it('returns 404 for a company filter outside the scope, without querying', async () => {
+      await expect(
+        service.search(
+          { kind: 'company', companyId: COMPANY_ID },
+          { ...page, companyId: 'c-2' },
+        ),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(repo.search).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('rename', () => {
+    const scope = { kind: 'company' as const, companyId: COMPANY_ID };
+
+    it('trims and saves the new name, looking the user up inside the scope', async () => {
+      repo.findOneBy.mockResolvedValue(makeUser());
+
+      const user = await service.rename(USER_ID, scope, '  Priya S  ');
+
+      expect(repo.findOneBy).toHaveBeenCalledWith({
+        id: USER_ID,
+        companyId: COMPANY_ID,
+      });
+      expect(repo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Priya S' }),
+      );
+      expect(user.name).toBe('Priya S');
+    });
+
+    it('rejects a blank or too long name with 400 before loading the user', async () => {
+      await expect(
+        service.rename(USER_ID, scope, '   '),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(
+        service.rename(USER_ID, scope, 'x'.repeat(201)),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(repo.findOneBy).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 for a user outside the scope', async () => {
+      repo.findOneBy.mockResolvedValue(null);
+
+      await expect(
+        service.rename(USER_ID, scope, 'New'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(repo.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('assertCanDelete', () => {
+    it('rejects deleting your own account with 400', () => {
+      expect(() => service.assertCanDelete(USER_ID, makeUser())).toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('allows deleting someone else', () => {
+      expect(() =>
+        service.assertCanDelete('someone-else', makeUser()),
+      ).not.toThrow();
     });
   });
 

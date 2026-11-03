@@ -1,11 +1,16 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
+  Patch,
   ParseUUIDPipe,
   Post,
   Put,
+  Query,
 } from '@nestjs/common';
 
 import { ROLE_NAMES, type RoleName } from '../../roles/role-name.js';
@@ -15,9 +20,12 @@ import {
 } from '../auth/current-user.decorator.js';
 import { Roles } from '../auth/roles.decorator.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
+import { ListUsersQuery } from './dto/list-users.query.js';
+import { UpdateUserDto } from './dto/update-user.dto.js';
 import { UpdateUserRolesDto } from './dto/update-user-roles.dto.js';
 import {
   FeatureFlagFacade,
+  type UserListPage,
   type UserWithRoles,
 } from '../feature-flag.facade.js';
 
@@ -34,6 +42,14 @@ export class UsersController {
     return this.facade.createUser(me, dto);
   }
 
+  @Get()
+  list(
+    @CurrentUser() me: CurrentUserInfo,
+    @Query() query: ListUsersQuery,
+  ): Promise<UserListPage> {
+    return this.facade.listUsers(me, query);
+  }
+
   @Get('me')
   @Roles(...ROLE_NAMES)
   findMe(@CurrentUser() me: CurrentUserInfo): Promise<UserWithRoles> {
@@ -46,6 +62,24 @@ export class UsersController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<UserWithRoles> {
     return this.facade.findUser(me, id);
+  }
+
+  @Patch(':id')
+  rename(
+    @CurrentUser() me: CurrentUserInfo,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateUserDto,
+  ): Promise<UserWithRoles> {
+    return this.facade.renameUser(me, id, dto.name);
+  }
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async remove(
+    @CurrentUser() me: CurrentUserInfo,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<void> {
+    await this.facade.removeUser(me, id);
   }
 
   @Get(':id/roles')

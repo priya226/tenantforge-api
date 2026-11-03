@@ -19,6 +19,17 @@ export class UserRoleRepository extends BaseRepository<UserRole> {
     });
   }
 
+  /** Active role mappings (with role) for all the given users. */
+  findByUsers(userIds: string[]): Promise<UserRole[]> {
+    if (userIds.length === 0) {
+      return Promise.resolve([]);
+    }
+    return this.find({
+      where: { userId: In(userIds), role: { isDeleted: false } },
+      relations: { role: true },
+    });
+  }
+
   softDeleteByUserIds(userIds: string[]): Promise<number> {
     return this.softDeleteBy({ userId: In(userIds) });
   }

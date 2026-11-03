@@ -7,12 +7,13 @@ import {
 import * as argon2 from 'argon2';
 import { isEmail } from 'class-validator';
 
-import type { TenantScope } from '../common/tenant-scope.js';
+import { inScope, type TenantScope } from '../common/tenant-scope.js';
 import { UniqueViolationError } from '../common/unique-violation.error.js';
 import type { Transaction } from '../database/transaction-runner.js';
 import { normalizeEmail } from './normalize-email.js';
 import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from './password-policy.js';
 import { User } from './user.entity.js';
+import type { UserSearch } from './user-search.js';
 import { UserRepository } from './user.repository.js';
 
 export interface NewUser {
@@ -20,6 +21,11 @@ export interface NewUser {
   name: string;
   email: string;
   password: string;
+}
+
+export interface UserPage {
+  items: User[];
+  total: number;
 }
 
 @Injectable()
@@ -36,6 +42,29 @@ export class UsersService {
       throw new NotFoundException(`User ${id} not found`);
     }
     return user;
+  }
+
+  /** One page of users; a company scope only sees its own company, a foreign companyId → 404. */
+  async search(scope: TenantScope, input: UserSearch): Promise<UserPage> {
+    if (input.companyId !== undefined && !inScope(scope, input.companyId)) {
+      throw new NotFoundException(`Company ${input.companyId} not found`);
+    }
+    const companyId =
+      input.companyId ??
+      (scope.kind === 'company' ? scope.companyId : undefined);
+    const [items, total] = await this.users.search({ ...input, companyId });
+    return { items, total };
+  }
+
+  /** Trims and validates the name, then renames a user found inside the scope. */
+  async rename(id: string, scope: TenantScope, name: string): Promise<User> {
+    const trimmed = name.trim();
+    if (trimmed.length === 0 || trimmed.length > 200) {
+      throw new BadRequestException('name must be 1-200 characters');
+    }
+    const user = await this.findOne(id, scope);
+    user.name = trimmed;
+    return this.users.save(user);
   }
 
   findActive(id: string): Promise<User | null> {
@@ -89,8 +118,24 @@ export class UsersService {
     return saved;
   }
 
-  findIdsInCompany(companyId: string, tx: Transaction): Promise<string[]> {
+  /** Ids of active users in the company (or all platform users for null), inside tx. */
+  findIdsInCompany(
+    companyId: string | null,
+    tx: Transaction,
+  ): Promise<string[]> {
     return this.users.withTransaction(tx).findIdsByCompany(companyId);
+  }
+
+  /** 400 when someone tries to delete their own account. */
+  assertCanDelete(actorUserId: string, user: User): void {
+    if (actorUserId === user.id) {
+      throw new BadRequestException("You can't delete your own account");
+    }
+  }
+
+  /** Soft-deletes one user inside tx. */
+  async remove(user: User, tx: Transaction): Promise<void> {
+    await this.users.withTransaction(tx).softDelete(user);
   }
 
   async softDeleteByCompany(

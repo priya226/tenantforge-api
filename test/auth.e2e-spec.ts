@@ -2,17 +2,14 @@ import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import type { App } from 'supertest/types.js';
 
-import { ADMIN, createE2eApp, login, resetDatabase } from './e2e-app.js';
-
-const PASSWORD = 'e2e-user-password-1';
-
-interface Tenant {
-  companyId: string;
-  adminId: string;
-  adminEmail: string;
-  viewerId: string;
-  viewerEmail: string;
-}
+import {
+  ADMIN,
+  createE2eApp,
+  createTenant as createTenantVia,
+  login,
+  PASSWORD,
+  resetDatabase,
+} from './e2e-app.js';
 
 describe('Auth (e2e)', () => {
   let app: INestApplication<App>;
@@ -20,46 +17,8 @@ describe('Auth (e2e)', () => {
 
   const http = () => request(app.getHttpServer());
 
-  async function createTenant(name: string): Promise<Tenant> {
-    const auth = { Authorization: `Bearer ${platformToken}` };
-    const company = await http()
-      .post('/companies')
-      .set(auth)
-      .send({ name })
-      .expect(201);
-    const companyId = (company.body as { id: string }).id;
-    const slug = name.toLowerCase();
-
-    const admin = await http()
-      .post('/users')
-      .set(auth)
-      .send({
-        companyId,
-        name: `${name} Admin`,
-        email: `admin@${slug}.test`,
-        password: PASSWORD,
-        roles: ['COMPANY_ADMIN'],
-      })
-      .expect(201);
-    const viewer = await http()
-      .post('/users')
-      .set(auth)
-      .send({
-        companyId,
-        name: `${name} Viewer`,
-        email: `viewer@${slug}.test`,
-        password: PASSWORD,
-      })
-      .expect(201);
-
-    return {
-      companyId,
-      adminId: (admin.body as { id: string }).id,
-      adminEmail: `admin@${slug}.test`,
-      viewerId: (viewer.body as { id: string }).id,
-      viewerEmail: `viewer@${slug}.test`,
-    };
-  }
+  const createTenant = (name: string) =>
+    createTenantVia(app, platformToken, name);
 
   beforeAll(async () => {
     app = await createE2eApp();
