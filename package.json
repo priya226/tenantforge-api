@@ -22,6 +22,9 @@
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
     "db:migrate": "docker compose run --rm flyway migrate",
     "db:info": "docker compose run --rm flyway info",
+    "db:test:create": "docker compose exec -T postgres psql -U postgres -v ON_ERROR_STOP=1 < db/test/create-test-db.sql",
+    "db:test:migrate": "docker compose run --rm -e FLYWAY_URL=jdbc:postgresql://postgres:5432/tenantforge_test flyway migrate",
+    "db:test:setup": "npm run db:test:create && npm run db:test:migrate",
     "seed:admin": "nest build && node dist/seed/seed-admin.js"
   },
   "dependencies": {

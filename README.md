@@ -173,18 +173,34 @@ docker compose exec postgres psql -U postgres -d tenantforge
 | `npm run start:prod` | Runs the compiled app from `dist/` |
 | `npm test` | Runs the unit tests once |
 | `npm run test:watch` | Re-runs the unit tests whenever a file changes |
-| `npm run test:e2e` | Runs the end-to-end tests |
+| `npm run test:e2e` | Runs the end-to-end tests against the `tenantforge_test` database (run `db:test:setup` first) |
 | `npm run lint` | Checks the code with oxlint |
 | `npm run format` | Formats the code with Prettier |
 | `npm run db:migrate` | Applies pending database migrations with Flyway |
 | `npm run db:info` | Lists every migration and whether it has been applied |
+| `npm run db:test:setup` | Creates the `tenantforge_test` database if missing and migrates it with Flyway. Safe to re-run; run it after adding a migration |
 | `npm run seed:admin` | Builds the app, then creates the first platform admin from `.env` if none exists |
+
+## Testing
+
+- **Unit tests** (`npm test`): `*.spec.ts` next to the code, with fakes instead of a database.
+- **End-to-end tests** (`npm run test:e2e`): `test/*.e2e-spec.ts`. They start the real app (same setup as `main.ts`, via `configureApp`) and call it over HTTP with Supertest, against a real Postgres database.
+  - They use a separate database, `tenantforge_test`, in the same Docker Postgres, so your dev data is never touched. Its schema comes from the same Flyway migrations.
+  - Before each test the tables are emptied and a platform admin is seeded. The reset refuses to run on any database whose name doesn't end in `_test`.
+  - Test files run one at a time, because they share the database.
+
+```bash
+docker compose up -d       # Postgres must be running
+npm run db:test:setup      # once, and after every new migration
+npm run test:e2e
+```
 
 ## Project structure
 
 ```
 src/
 ├─ main.ts          Entry point: creates the Nest app and starts the HTTP server
+├─ app.setup.ts     configureApp(): global ValidationPipe; shared by main.ts and the e2e tests
 ├─ app.module.ts    Root module: config, database, ApiModule
 ├─ api/             HTTP layer: controllers + the one facade they all call
 │  ├─ api.module.ts          Imports the feature modules the facade uses
@@ -241,7 +257,12 @@ src/
    ├─ database.module.ts     TypeORM connection to Postgres, configured from .env
    └─ transaction-runner.ts  Runs a block of work in one DB transaction
 db/
-└─ migration/             Flyway SQL migrations
+├─ migration/             Flyway SQL migrations
+└─ test/create-test-db.sql  Creates tenantforge_test if it doesn't exist
+test/
+├─ e2e-app.ts             Starts the app for e2e tests, resets the test database, logs in
+├─ auth.e2e-spec.ts       Login, 401/403, tenant scope (404), /users/me, refresh rotation, reuse, logout
+└─ app.e2e-spec.ts        GET / is public
 ```
 
 **Layers:** controller (HTTP) → `FeatureFlagFacade`, one for the whole app (only calls services in order, owns cross-feature transactions, combines results; no business rules) → service (rules for one feature) → repository (database). Feature services never call each other; the facade does. Every controller calls the same facade. Each feature has its own repository that extends `BaseRepository`. Every read adds `is_deleted = false` automatically. Pass `{ includeDeleted: true }` to also get deleted rows. Services never call TypeORM directly.
